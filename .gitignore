@@ -1,0 +1,18 @@
+# Compiled classes
+**/*.class
+
+# Maven target directories
+**/target/
+
+# Database directories and files
+**/databases/
+**/*.gdb
+**/*.gdb.log
+**/*.db
+**/*.log
+
+# IDE specific files
+.idea/
+*.iml
+.vscode/
+.DS_Store
