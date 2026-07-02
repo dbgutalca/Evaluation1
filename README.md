@@ -1,6 +1,9 @@
-# Persistence Engines Comparison
+# Performance Evaluation of Secondary-Memory Storage Methods for Property Graphs (Supplementary material) 
 
-The objective of this phase was to evaluate and compare the performance, write speed, and storage footprint of five different database technologies for storing property graphs.
+This repository contains Supplementary material of the article "Performance Evaluation of Secondary-Memory Storage Methods for Property Graphs".
+
+## Abstract
+We present an experimental study of secondary-memory storage alternatives for property graphs. To remove the main-memory storage bottleneck of PathDB—an in-memory engine specialized in evaluating regular path queries (RPQs)—we implement and integrate five on-disk backends based on MapDB, RocksDB, Sparksee, PostgreSQL, and Neo4j. Each backend is tailored to the underlying technology, respectively leveraging (i) disk-based hash maps and B-trees (MapDB), (ii) a column-family key–value layout (RocksDB), (iii) a schema-aware native graph store (Sparksee), (iv) an entity–attribute–value (EAV) relational schema (PostgreSQL), and (v) a homogeneous labeled-property model (Neo4j). Using LDBC SNB Datagen graphs at scale factors 0.1, 0.3, 1.0, and 3.0, we measure ingestion time, disk footprint, and the average latency of three representative access patterns: node lookup by identifier, edge retrieval by label, and node retrieval by property value. Across all scales, RocksDB delivers the best overall trade-off, achieving the lowest query latency together with the fastest ingestion and smallest footprint, and is therefore selected as PathDB’s candidate secondary-memory backend.
 
 ## Repository Structure
 
