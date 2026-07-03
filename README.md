@@ -37,6 +37,7 @@ The benchmark compares five distinct storage models:
 As evaluation datasets, we used four property graphs produced with the LDBC Social Network Benchmark (SNB) Data Generator. Specifically, we generate four graphs with scale factors 0.1, 0.3, 1.0, and 3.0, respectively. The following table shows basic information about the SNB graph instances. 
 
 | Graph | Scale Factor | Nodes | Edges | Disk Size |
+|---|---|---|---|---|
 | G1 | 0.1 | 367,342 | 1,760,926 | 216 MB |
 | G2 | 0.3 | 940,322 | 5,003,201 | 609 MB |
 | G3 | 1.0 | 2,997,354 | 17,196,776 | 2.0 GB |
