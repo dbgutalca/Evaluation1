@@ -34,7 +34,7 @@ The benchmark compares five distinct storage models:
 
 ## Datasets
 
-As evaluation datasets, we used four property graphs produced with the LDBC Social Network Benchmark (SNB) Data Generator. Specifically, we generate four graphs with scale factors 0.1, 0.3, 1.0, and 3.0, respectively. The following table shows basic information about the SNB graph instances. 
+As evaluation datasets, we used four property graphs produced with the LDBC Social Network Benchmark (SNB) Data Generator. Specifically, we generate four graphs with scale factors 0.1, 0.3, 1.0, and 3.0, respectively. The generator produces a directory of CSV files, each corresponding to an element of the SNB schema. To streamline ingestion into PathDB, we developed a Python tool that transforms and consolidates these CSVs into two PGDF files: nodes.pgdf (node records) and edges.pgdf (edge records). Reproducible generation and conversion instructions are available at [here](\url{https://github.com/urzuaf/ldbc-to-pgdf}). The following table shows basic information about the generated graph instances.
 
 | Graph | Scale Factor | Nodes | Edges | Disk Size |
 |---|---|---|---|---|
@@ -43,7 +43,7 @@ As evaluation datasets, we used four property graphs produced with the LDBC Soci
 | G3 | 1.0 | 2,997,354 | 17,196,776 | 2.0 GB |
 | G4 | 3.0 | 8,513,157 | 51,035,227 | 6.1 GB |
 
-The datasets can be downloaded from [Here](https://drive.google.com/drive/folders/1bFwZx0RRvLi9lhKBQNaeUpRD6ygiiJD0). 
+The datasets can be downloaded from [here](https://drive.google.com/drive/folders/1bFwZx0RRvLi9lhKBQNaeUpRD6ygiiJD0). 
 
 ---
 
