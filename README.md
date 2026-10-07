@@ -45,15 +45,24 @@ The systems are subjected to three primary query workloads:
 
 ---
 
-## Related information
+## Parameter Generation and Workload Inputs
+
+To ensure reproducible and uniform sampling across scale factors, query parameters are generated dynamically using `generate_params.py`:
+
+*   **`generate_params.py`**: A Python script that parses `sf*/Nodes.pgdf` and applies *Reservoir Sampling* (`NUM_SAMPLES = 100`, `SEED = 42`) over the dynamic entity labels (`COMMENT`, `FORUM`, `PERSON`, `POST`).
+*   **`params/`**: Output directory containing generated parameter files for each scale factor (`sf01`, `sf03`, `sf1`, `sf3`):
+    *   `ids_sf<scale>`: Text file containing **100 sampled node IDs** per scale factor used as inputs for **Q1**.
+    *   `props_sf<scale>`: Text file containing **100 sampled property-value pairs** (`key=value`) per scale factor used as inputs for **Q3**.
+
+---
+
+## Directory Structure and Related Information
 
 *   **`methods/`**: Directory containing the source code for each evaluated database prototype.
     *   `rocksstorage/`: RocksDB Java implementation (Maven project).
     *   `mapdbstorage/`: MapDB Java implementation (Maven project).
     *   `neo4jc/`: Neo4j Java client implementation (Maven project).
-    *   `sparksee/`: Sparksee Java implementation (precompiled jars included).
+    *   `sparksee/`: Sparksee Java implementation (precompiled JARs included).
     *   `sql/`: PostgreSQL Java implementation (JDBC driver included).
-*   **`ids`**: A text file containing the **100 unique node IDs** used as inputs for the Q1 experiment.
-*   **`relationships`**: A text file containing the **10 relationship labels** of high cardinality used to evaluate Q2.
-*   **`property_value_pairs`**: A text file containing the **8 property-value pairs** used to evaluate Q3.
-*   **`results.md`**: A markdown file containing the average results (ingestion time, storage footprint, and average query latencies) for all engines across different scale factors.
+*   **`generate_params.py`**: Python script to extract reproducible input parameters from `sf*/Nodes.pgdf`.
+*   **`params/`**: Directory containing scale-factor specific input files (`ids_sf*` and `props_sf*`).
