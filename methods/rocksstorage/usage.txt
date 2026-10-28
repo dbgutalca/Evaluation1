@@ -4,3 +4,5 @@ Queries:
     -  mvn compile -q exec:java -Dexec.mainClass="com.rocks.Main" -Dexec.args="<db_name> -g <node_id>"
     -  mvn compile -q exec:java -Dexec.mainClass="com.rocks.Main" -Dexec.args="<db_name> -gel <edge_label>"
     -  mvn compile -q exec:java -Dexec.mainClass="com.rocks.Main" -Dexec.args="<db_name> -nv <property=value>"
+Test:
+    -  mvn test

@@ -6,3 +6,6 @@ Queries:
     -  mvn compile -q exec:java -Dexec.mainClass="com.neo4j.Main" -Dexec.args="bolt://localhost:7687 <db_user> <db_pass> -g <node_id>"
     -  mvn compile -q exec:java -Dexec.mainClass="com.neo4j.Main" -Dexec.args="bolt://localhost:7687 <db_user> <db_pass> -gel <edge_label>"
     -  mvn compile -q exec:java -Dexec.mainClass="com.neo4j.Main" -Dexec.args="bolt://localhost:7687 <db_user> <db_pass> -nv <property=value>"
+Test:
+    -  mvn test
+    -  mvn test -Dneo4j.uri=bolt://localhost:7687 -Dneo4j.user=<db_user> -Dneo4j.pass=<db_pass>

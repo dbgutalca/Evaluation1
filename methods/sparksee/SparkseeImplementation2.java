@@ -127,15 +127,7 @@ public class SparkseeImplementation2 {
             System.out.println("\ngetNode");
             for (String id : ids) {
                 long t0 = System.nanoTime();
-                
-                long oid = g.findObject(targetAttr, vArg.setString(id));
-                if (oid != com.sparsity.sparksee.gdb.Objects.InvalidOID) {
-                    AttributeList attrs = g.getAttributes(oid);
-                    for (Integer attrId : attrs) {
-                        g.getAttribute(oid, attrId, vRes);
-                    }
-                }
-                
+                getNode(g, targetAttr, id, vArg, vRes);
                 long t1 = System.nanoTime();
                 long diff = t1 - t0;
                 totalGetNode += diff;
@@ -145,29 +137,12 @@ public class SparkseeImplementation2 {
             long totalLabels = 0;
             System.out.println("\ngetEdgesByLabel");
             for (String label : labels) {
-                AtomicLong count = new AtomicLong();
                 long t0 = System.nanoTime();
-                
-                int edgeType = g.findType(label);
-                if (edgeType != Type.InvalidType) {
-                    int eidAttr = g.findAttribute(edgeType, "eid");
-                    com.sparsity.sparksee.gdb.Objects objs = g.select(edgeType);
-                    ObjectsIterator it = objs.iterator();
-                    while (it.hasNext()) {
-                        long eoid = it.next();
-                        if (eidAttr != Attribute.InvalidAttribute) {
-                            g.getAttribute(eoid, eidAttr, vRes);
-                        }
-                        count.incrementAndGet();
-                    }
-                    it.close();
-                    objs.close();
-                }
-                
+                long count = forEachEdgeIdByLabel(g, label, vRes, null);
                 long t1 = System.nanoTime();
                 long diff = t1 - t0;
                 totalLabels += diff;
-                System.out.printf(Locale.ROOT, "Label %s (found %d): %.4f ms%n", label, count.get(), diff / 1e6);
+                System.out.printf(Locale.ROOT, "Label %s (found %d): %.4f ms%n", label, count, diff / 1e6);
             }
 
             long totalProps = 0;
@@ -184,41 +159,12 @@ public class SparkseeImplementation2 {
                 String key = kv[0];
                 String val = kv[1];
                 
-                AtomicLong count = new AtomicLong();
                 long t0 = System.nanoTime();
-
-                for (int typeId : allNodeTypes) {
-                    int attrId = g.findAttribute(typeId, key);
-                    if (attrId == Attribute.InvalidAttribute) continue;
-
-                    DataType dt = g.getAttribute(attrId).getDataType();
-                    boolean typeOk = false;
-                    try {
-                        switch (dt) {
-                            case Integer: vArg.setInteger(Integer.parseInt(val)); typeOk = true; break;
-                            case Long:    vArg.setLong(Long.parseLong(val));      typeOk = true; break;
-                            case Double:  vArg.setDouble(Double.parseDouble(val));typeOk = true; break;
-                            case Boolean: vArg.setBoolean(Boolean.parseBoolean(val)); typeOk = true; break;
-                            default:      vArg.setString(val); typeOk = true; break;
-                        }
-                    } catch (Exception ignore) {}
-
-                    if (!typeOk) continue;
-
-                    com.sparsity.sparksee.gdb.Objects objs = g.select(attrId, Condition.Equal, vArg);
-                    ObjectsIterator it = objs.iterator();
-                    while(it.hasNext()) {
-                        long oid = it.next();
-                        count.incrementAndGet();
-                    }
-                    it.close();
-                    objs.close();
-                }
-
+                long count = forEachNodeByPropertyEquals(g, allNodeTypes, key, val, vArg, null);
                 long t1 = System.nanoTime();
                 long diff = t1 - t0;
                 totalProps += diff;
-                System.out.printf(Locale.ROOT, "Prop %s=%s (found %d): %.4f ms%n", key, val, count.get(), diff / 1e6);
+                System.out.printf(Locale.ROOT, "Prop %s=%s (found %d): %.4f ms%n", key, val, count, diff / 1e6);
             }
 
             System.out.println("\n==========================================");
@@ -241,7 +187,7 @@ public class SparkseeImplementation2 {
         System.out.printf(Locale.ROOT, "%-28s | Total: %8.3f ms | Avg: %8.4f ms | Count: %d%n", op, totalMs, avgMs, count);
     }
 
-    private void runIngest(String nodesPath, String edgesPath, String dbPath) throws Exception {
+    public void runIngest(String nodesPath, String edgesPath, String dbPath) throws Exception {
         long startTotal = System.nanoTime();
         
         SparkseeConfig cfg = new SparkseeConfig("sparksee.cfg");
@@ -276,7 +222,7 @@ public class SparkseeImplementation2 {
         System.out.printf(Locale.ROOT, "Ingest Completed. Total Time: %.3f ms%n", (endTotal - startTotal) / 1e6);
     }
 
-    private void loadNodes(Session sess, Graph g, Path nodesFile) throws IOException {
+    public void loadNodes(Session sess, Graph g, Path nodesFile) throws IOException {
         try (BufferedReader br = Files.newBufferedReader(nodesFile, StandardCharsets.UTF_8)) {
             String line;
             String[] header = null;
@@ -332,7 +278,7 @@ public class SparkseeImplementation2 {
         }
     }
 
-    private void loadEdges(Session sess, Graph g, Path edgesFile) throws IOException {
+    public void loadEdges(Session sess, Graph g, Path edgesFile) throws IOException {
         try (BufferedReader br = Files.newBufferedReader(edgesFile, StandardCharsets.UTF_8)) {
             String line = br.readLine();
             if (line == null) return;
@@ -384,6 +330,73 @@ public class SparkseeImplementation2 {
         }
     }
 
+    // Q1: getNode
+    public long getNode(Graph g, int targetAttr, String id, Value vArg, Value vRes) {
+        long oid = g.findObject(targetAttr, vArg.setString(id));
+        if (oid != com.sparsity.sparksee.gdb.Objects.InvalidOID) {
+            AttributeList attrs = g.getAttributes(oid);
+            for (Integer attrId : attrs) {
+                g.getAttribute(oid, attrId, vRes);
+            }
+        }
+        return oid;
+    }
+
+    // Q2: forEachEdgeIdByLabel
+    public long forEachEdgeIdByLabel(Graph g, String label, Value vRes, java.util.function.Consumer<String> consumer) {
+        long count = 0;
+        int edgeType = g.findType(label);
+        if (edgeType != Type.InvalidType) {
+            int eidAttr = g.findAttribute(edgeType, "eid");
+            com.sparsity.sparksee.gdb.Objects objs = g.select(edgeType);
+            ObjectsIterator it = objs.iterator();
+            try {
+                while (it.hasNext()) {
+                    long eoid = it.next();
+                    if (eidAttr != Attribute.InvalidAttribute) {
+                        g.getAttribute(eoid, eidAttr, vRes);
+                        if (consumer != null) {
+                            consumer.accept(vRes.getString());
+                        }
+                    }
+                    count++;
+                }
+            } finally {
+                it.close();
+                objs.close();
+            }
+        }
+        return count;
+    }
+
+    // Q3: forEachNodeByPropertyEquals
+    public long forEachNodeByPropertyEquals(Graph g, List<Integer> allNodeTypes, String key, String val, Value vArg, java.util.function.Consumer<Long> consumer) {
+        long count = 0;
+        for (int typeId : allNodeTypes) {
+            int attrId = g.findAttribute(typeId, key);
+            if (attrId == Attribute.InvalidAttribute) continue;
+
+            DataType dt = g.getAttribute(attrId).getDataType();
+            if (!trySetValue(vArg, dt, val)) continue;
+
+            com.sparsity.sparksee.gdb.Objects objs = g.select(attrId, Condition.Equal, vArg);
+            ObjectsIterator it = objs.iterator();
+            try {
+                while (it.hasNext()) {
+                    long oid = it.next();
+                    if (consumer != null) {
+                        consumer.accept(oid);
+                    }
+                    count++;
+                }
+            } finally {
+                it.close();
+                objs.close();
+            }
+        }
+        return count;
+    }
+
     // -g <id>
     private void runGetNode(String dbPath, String wantedId) throws Exception {
         runWithSession(dbPath, (sess, g) -> {
@@ -393,8 +406,9 @@ public class SparkseeImplementation2 {
             System.out.println("Searching node ext_id='" + wantedId + "' ...");
             long t0 = System.nanoTime();
             
-            Value v = new Value();
-            long oid = g.findObject(targetAttr, v.setString(wantedId));
+            Value vArg = new Value();
+            Value vRes = new Value();
+            long oid = getNode(g, targetAttr, wantedId, vArg, vRes);
             
             if (oid == com.sparsity.sparksee.gdb.Objects.InvalidOID) {
                 System.out.println("Not found.");
@@ -414,30 +428,13 @@ public class SparkseeImplementation2 {
             System.out.println("Searching edges with label='" + label + "' ...");
             long t0 = System.nanoTime();
             
-            int edgeType = g.findType(label);
-            if (edgeType == Type.InvalidType) {
-                System.out.println("Edge label not found: " + label);
-                return;
-            }
-            int eidAttr = g.findAttribute(edgeType, "eid");
+            Value vRes = new Value();
+            AtomicLong c = new AtomicLong();
+            long count = forEachEdgeIdByLabel(g, label, vRes, eid -> {
+                long idx = c.incrementAndGet();
+                if (idx <= 10) System.out.println(eid);
+            });
             
-            com.sparsity.sparksee.gdb.Objects objs = g.select(edgeType);
-            ObjectsIterator it = objs.iterator();
-            long count = 0;
-            Value v = new Value();
-            try {
-                while (it.hasNext()) {
-                    long eoid = it.next();
-                    count++;
-                    if (count <= 10 && eidAttr != Attribute.InvalidAttribute) {
-                        g.getAttribute(eoid, eidAttr, v);
-                        System.out.println(v.getString());
-                    }
-                }
-            } finally {
-                it.close();
-                objs.close();
-            }
             long t1 = System.nanoTime();
             if (count > 10) System.out.println("... (total " + count + ")");
             System.out.printf(Locale.ROOT, "Total edges: %,d. Query time: %.3f ms%n", count, (t1 - t0) / 1e6);
@@ -454,30 +451,19 @@ public class SparkseeImplementation2 {
         runWithSession(dbPath, (sess, g) -> {
             System.out.println("Searching nodes where " + key + "='" + val + "' ...");
             long t0 = System.nanoTime();
-            long total = 0;
             
             TypeList tList = g.findNodeTypes();
+            List<Integer> allNodeTypes = new ArrayList<>();
             TypeListIterator tIt = tList.iterator();
-            Value vArg = new Value();
+            while (tIt.hasNext()) allNodeTypes.add(tIt.next());
             
-            while(tIt.hasNext()) {
-                int typeId = tIt.next();
-                int attrId = g.findAttribute(typeId, key);
-                if (attrId == Attribute.InvalidAttribute) continue;
-                
-                DataType dt = g.getAttribute(attrId).getDataType();
-                if (!trySetValue(vArg, dt, val)) continue;
-
-                com.sparsity.sparksee.gdb.Objects objs = g.select(attrId, Condition.Equal, vArg);
-                ObjectsIterator it = objs.iterator();
-                while(it.hasNext()) {
-                    long oid = it.next();
-                    total++;
-                    if (total <= 10) System.out.println("Found ID=" + oid);
-                }
-                it.close();
-                objs.close();
-            }
+            Value vArg = new Value();
+            AtomicLong c = new AtomicLong();
+            long total = forEachNodeByPropertyEquals(g, allNodeTypes, key, val, vArg, oid -> {
+                long idx = c.incrementAndGet();
+                if (idx <= 10) System.out.println("Found ID=" + oid);
+            });
+            
             long t1 = System.nanoTime();
             if (total > 10) System.out.println("... (total " + total + ")");
             System.out.printf(Locale.ROOT, "Total nodes: %,d. Query time: %.3f ms%n", total, (t1 - t0) / 1e6);

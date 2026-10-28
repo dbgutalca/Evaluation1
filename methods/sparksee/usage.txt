@@ -7,3 +7,6 @@ Queries:
     -   java  -cp sparkseejava.jar:.  SparkseeImplementation2 -d <db_name> -g <node_id>
     -   java  -cp sparkseejava.jar:.  SparkseeImplementation2 -d <db_name> -gel <edge_label>
     -   java  -cp sparkseejava.jar:.  SparkseeImplementation2 -d <db_name> -nv <property=value>
+Test:
+    -   javac -cp sparkseejava.jar:. SparkseeTest.java
+    -   java  -cp sparkseejava.jar:. SparkseeTest

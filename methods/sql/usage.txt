@@ -7,3 +7,6 @@ Queries:
     -   java -cp postgresql-42.7.8.jar:. PostgresColumns.java jdbc:postgresql://localhost:5432/<db_name> <db_user> <db_pass> -g <node_id>
     -   java -cp postgresql-42.7.8.jar:. PostgresColumns.java jdbc:postgresql://localhost:5432/<db_name> <db_user> <db_pass> -gel <edge_label>
     -   java -cp postgresql-42.7.8.jar:. PostgresColumns.java jdbc:postgresql://localhost:5432/<db_name> <db_user> <db_pass> -nv <property=value>
+Test:
+    -   javac -cp postgresql-42.7.8.jar:. PostgresTest.java
+    -   java  -cp postgresql-42.7.8.jar:. PostgresTest jdbc:postgresql://localhost:5432/<db_name> <db_user> <db_pass>

@@ -84,6 +84,90 @@ public class PostgresColumns {
         System.exit(2);
     }
 
+    public static final String SQL_GET_NODE = "SELECT label, key, value FROM node_properties WHERE node_id = ?";
+    public static final String SQL_EDGES_BY_LABEL = "SELECT id FROM edges WHERE label = ?";
+    public static final String SQL_NODES_BY_PROP = "SELECT node_id FROM node_properties WHERE key = ? AND value = ?";
+
+    public static final class NodeData {
+        public final String label;
+        public final Map<String, String> props;
+
+        public NodeData(String label, Map<String, String> props) {
+            this.label = label;
+            this.props = props;
+        }
+
+        @Override
+        public String toString() {
+            return "NodeData{label=" + label + ", props=" + props + "}";
+        }
+    }
+
+    public static NodeData getNode(PreparedStatement ps, String nodeId) throws SQLException {
+        ps.setString(1, nodeId);
+        String label = null;
+        Map<String, String> props = null;
+        try (ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                if (label == null) {
+                    label = rs.getString(1);
+                    props = new LinkedHashMap<>();
+                }
+                props.put(rs.getString(2), rs.getString(3));
+            }
+        }
+        return label == null ? null : new NodeData(label, props);
+    }
+
+    public static NodeData getNode(Connection cx, String nodeId) throws SQLException {
+        try (PreparedStatement ps = cx.prepareStatement(SQL_GET_NODE)) {
+            return getNode(ps, nodeId);
+        }
+    }
+
+    public static long forEachEdgeIdByLabel(PreparedStatement ps, String label, java.util.function.Consumer<String> consumer) throws SQLException {
+        ps.setString(1, label);
+        long count = 0;
+        try (ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                String eid = rs.getString(1);
+                if (consumer != null) {
+                    consumer.accept(eid);
+                }
+                count++;
+            }
+        }
+        return count;
+    }
+
+    public static long forEachEdgeIdByLabel(Connection cx, String label, java.util.function.Consumer<String> consumer) throws SQLException {
+        try (PreparedStatement ps = cx.prepareStatement(SQL_EDGES_BY_LABEL)) {
+            return forEachEdgeIdByLabel(ps, label, consumer);
+        }
+    }
+
+    public static long forEachNodeByPropertyEquals(PreparedStatement ps, String key, String value, java.util.function.Consumer<String> consumer) throws SQLException {
+        ps.setString(1, key);
+        ps.setString(2, value);
+        long count = 0;
+        try (ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                String nid = rs.getString(1);
+                if (consumer != null) {
+                    consumer.accept(nid);
+                }
+                count++;
+            }
+        }
+        return count;
+    }
+
+    public static long forEachNodeByPropertyEquals(Connection cx, String key, String value, java.util.function.Consumer<String> consumer) throws SQLException {
+        try (PreparedStatement ps = cx.prepareStatement(SQL_NODES_BY_PROP)) {
+            return forEachNodeByPropertyEquals(ps, key, value, consumer);
+        }
+    }
+
     public static void benchmarking(Connection cx, Path idsPath, Path labelsPath, Path propsPath) throws Exception {
         List<String> ids = Files.readAllLines(idsPath);
         List<String> labels = Files.readAllLines(labelsPath);
@@ -93,16 +177,10 @@ public class PostgresColumns {
 
         long totalGetNode = 0;
         System.out.println("\ngetNode");
-        String sqlNode = "SELECT label, key, value FROM node_properties WHERE node_id = ?";
-        try (PreparedStatement ps = cx.prepareStatement(sqlNode)) {
+        try (PreparedStatement ps = cx.prepareStatement(SQL_GET_NODE)) {
             for (String id : ids) {
                 long t0 = System.nanoTime();
-                ps.setString(1, id);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        rs.getString(1); rs.getString(2); rs.getString(3);
-                    }
-                }
+                getNode(ps, id);
                 long t1 = System.nanoTime();
                 long diff = t1 - t0;
                 totalGetNode += diff;
@@ -112,18 +190,10 @@ public class PostgresColumns {
 
         long totalLabels = 0;
         System.out.println("\nqueryEdgeIdsByLabel");
-        String sqlEdges = "SELECT id FROM edges WHERE label = ?";
-        try (PreparedStatement ps = cx.prepareStatement(sqlEdges)) {
+        try (PreparedStatement ps = cx.prepareStatement(SQL_EDGES_BY_LABEL)) {
             for (String label : labels) {
-                long count = 0;
                 long t0 = System.nanoTime();
-                ps.setString(1, label);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        rs.getString(1);
-                        count++;
-                    }
-                }
+                long count = forEachEdgeIdByLabel(ps, label, null);
                 long t1 = System.nanoTime();
                 long diff = t1 - t0;
                 totalLabels += diff;
@@ -133,23 +203,14 @@ public class PostgresColumns {
 
         long totalProps = 0;
         System.out.println("\nqueryNodesByPropEquals");
-        String sqlProps = "SELECT node_id FROM node_properties WHERE key = ? AND value = ?";
-        try (PreparedStatement ps = cx.prepareStatement(sqlProps)) {
+        try (PreparedStatement ps = cx.prepareStatement(SQL_NODES_BY_PROP)) {
             for (String line : props) {
                 String[] kv = line.split("=", 2);
                 if (kv.length < 2) continue;
                 String k = kv[0];
                 String v = kv[1];
-                long count = 0;
                 long t0 = System.nanoTime();
-                ps.setString(1, k);
-                ps.setString(2, v);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        rs.getString(1);
-                        count++;
-                    }
-                }
+                long count = forEachNodeByPropertyEquals(ps, k, v, null);
                 long t1 = System.nanoTime();
                 long diff = t1 - t0;
                 totalProps += diff;
@@ -171,7 +232,7 @@ public class PostgresColumns {
         System.out.printf(Locale.ROOT, "%-28s | Total: %8.3f ms | Avg: %8.4f ms | Count: %d%n", op, totalMs, avgMs, count);
     }
 
-    private static void runIngest(Connection cx, Path nodesFile, Path edgesFile) throws Exception {
+    public static void runIngest(Connection cx, Path nodesFile, Path edgesFile) throws Exception {
         System.out.println("Ingesting...");
         long t0 = System.nanoTime();
         ensureTables(cx);
@@ -183,7 +244,7 @@ public class PostgresColumns {
         System.out.printf(Locale.ROOT, "Completed: %.3f ms%n", (t1 - t0)/1e6);
     }
 
-    private static void ensureTables(Connection cx) throws SQLException {
+    public static void ensureTables(Connection cx) throws SQLException {
         String ddl =
             "CREATE TABLE IF NOT EXISTS nodes (" +
             "  id    TEXT PRIMARY KEY," +
@@ -213,7 +274,7 @@ public class PostgresColumns {
         cx.commit();
     }
 
-    private static void createIndexes(Connection cx) throws SQLException {
+    public static void createIndexes(Connection cx) throws SQLException {
         String ddl =
             "CREATE INDEX IF NOT EXISTS idx_nodes_label           ON nodes(label);" +
             "CREATE INDEX IF NOT EXISTS idx_nodeprops_key_val     ON node_properties(key, value);" +
@@ -227,75 +288,75 @@ public class PostgresColumns {
         cx.commit();
     }
 
-   private static void ingestNodes(Connection cx, Path nodesPgdf) throws IOException, SQLException {
-    final String upsertNode = "INSERT INTO nodes(id,label) VALUES(?,?) ON CONFLICT (id) DO NOTHING"; 
-    final String insertProp = "INSERT INTO node_properties(node_id,label,key,value) VALUES(?,?,?,?)";
+    public static void ingestNodes(Connection cx, Path nodesPgdf) throws IOException, SQLException {
+        final String upsertNode = "INSERT INTO nodes(id,label) VALUES(?,?) ON CONFLICT (id) DO NOTHING"; 
+        final String insertProp = "INSERT INTO node_properties(node_id,label,key,value) VALUES(?,?,?,?)";
 
-    try (BufferedReader br = Files.newBufferedReader(nodesPgdf, StandardCharsets.UTF_8);
-         PreparedStatement psNode = cx.prepareStatement(upsertNode);
-         PreparedStatement psProp = cx.prepareStatement(insertProp)) {
+        try (BufferedReader br = Files.newBufferedReader(nodesPgdf, StandardCharsets.UTF_8);
+             PreparedStatement psNode = cx.prepareStatement(upsertNode);
+             PreparedStatement psProp = cx.prepareStatement(insertProp)) {
 
-        String line;
-        String[] header = null;
-        int nBatch = 0, pBatch = 0;
-        long nCount = 0;
+            String line;
+            String[] header = null;
+            int nBatch = 0, pBatch = 0;
+            long nCount = 0;
 
-        while ((line = br.readLine()) != null) {
-            if (line.isBlank()) continue;
-            if (line.startsWith("@")) {
-                header = line.split("\\|", -1);
-                continue;
+            while ((line = br.readLine()) != null) {
+                if (line.isBlank()) continue;
+                if (line.startsWith("@")) {
+                    header = line.split("\\|", -1);
+                    continue;
+                }
+                if (header == null) continue;
+
+                String[] cols = line.split("\\|", -1);
+                Map<String,String> row = new LinkedHashMap<>();
+                for (int i = 0; i < header.length && i < cols.length; i++) {
+                    row.put(header[i], cols[i]);
+                }
+
+                String id    = nonNull(row.get("@id")).trim();
+                String label = nonNull(row.get("@label")).trim();
+                if (id.isEmpty() || label.isEmpty()) continue;
+
+                psNode.setString(1, id);
+                psNode.setString(2, label);
+                psNode.addBatch();
+                nBatch++; nCount++;
+
+                for (var e : row.entrySet()) {
+                    String k = e.getKey();
+                    if (k.startsWith("@")) continue;
+
+                    String v = nonNull(e.getValue());
+                    if (v.isEmpty()) continue;
+
+                    psProp.setString(1, id);
+                    psProp.setString(2, label);
+                    psProp.setString(3, k);
+                    psProp.setString(4, v);
+                    psProp.addBatch();
+                    pBatch++;
+                }
+
+                if (nBatch >= NODE_BATCH) {
+                    psNode.executeBatch(); 
+                    psProp.executeBatch(); 
+                    cx.commit();           
+                    nBatch = 0;
+                    pBatch = 0;
+                }
             }
-            if (header == null) continue;
 
-            String[] cols = line.split("\\|", -1);
-            Map<String,String> row = new LinkedHashMap<>();
-            for (int i = 0; i < header.length && i < cols.length; i++) {
-                row.put(header[i], cols[i]);
-            }
-
-            String id    = nonNull(row.get("@id")).trim();
-            String label = nonNull(row.get("@label")).trim();
-            if (id.isEmpty() || label.isEmpty()) continue;
-
-            psNode.setString(1, id);
-            psNode.setString(2, label);
-            psNode.addBatch();
-            nBatch++; nCount++;
-
-            for (var e : row.entrySet()) {
-                String k = e.getKey();
-                if (k.startsWith("@")) continue;
-
-                String v = nonNull(e.getValue());
-                if (v.isEmpty()) continue;
-
-                psProp.setString(1, id);
-                psProp.setString(2, label);
-                psProp.setString(3, k);
-                psProp.setString(4, v);
-                psProp.addBatch();
-                pBatch++;
-            }
-
-            if (nBatch >= NODE_BATCH) {
-                psNode.executeBatch(); 
-                psProp.executeBatch(); 
-                cx.commit();           
-                nBatch = 0;
-                pBatch = 0;
-            }
+            if (nBatch > 0) psNode.executeBatch();
+            if (pBatch > 0) psProp.executeBatch();
+            cx.commit();
+            
+            System.out.printf(Locale.ROOT, "  Nodes processed: %,d%n", nCount);
         }
+    } 
 
-        if (nBatch > 0) psNode.executeBatch();
-        if (pBatch > 0) psProp.executeBatch();
-        cx.commit();
-        
-        System.out.printf(Locale.ROOT, "  Nodes processed: %,d%n", nCount);
-    }
-} 
-
-    private static void ingestEdges(Connection cx, Path edgesPgdf) throws IOException, SQLException {
+    public static void ingestEdges(Connection cx, Path edgesPgdf) throws IOException, SQLException {
         final String insertEdge = "INSERT INTO edges(id,label,src,dst,directed) VALUES(?,?,?,?,?) ON CONFLICT (id) DO NOTHING";
 
         try (BufferedReader br = Files.newBufferedReader(edgesPgdf, StandardCharsets.UTF_8);
@@ -341,70 +402,46 @@ public class PostgresColumns {
         }
     }
 
-    private static void queryNodeWithAllProps(Connection cx, String nodeId) throws SQLException {
+    public static void queryNodeWithAllProps(Connection cx, String nodeId) throws SQLException {
         System.out.println("Node ID: " + nodeId);
         long t0 = System.nanoTime();
-        String sql = "SELECT label, key, value FROM node_properties WHERE node_id = ?";
-        try (PreparedStatement ps = cx.prepareStatement(sql)) {
-            ps.setString(1, nodeId);
-            ps.setFetchSize(100); 
-            String label = null;
-            boolean found = false;
-            try (ResultSet rs = ps.executeQuery()) {
-               while(rs.next()) {
-                   found = true;
-                   if (label == null) {
-                       label = rs.getString(1);
-                       System.out.println("  Label: " + label);
-                   }
-                   System.out.println("  " + rs.getString(2) + ": " + rs.getString(3));
-               }
+        NodeData n = getNode(cx, nodeId);
+        if (n == null) {
+            System.out.println("  (not found)");
+        } else {
+            System.out.println("  Label: " + n.label);
+            for (var entry : n.props.entrySet()) {
+                System.out.println("  " + entry.getKey() + ": " + entry.getValue());
             }
-            if (!found) System.out.println("  (not found)");
         }
         long t1 = System.nanoTime();
         System.out.printf(Locale.ROOT, "Time: %.3f ms%n", (t1 - t0)/1e6);
     }
 
-    private static void queryEdgeIdsByLabel(Connection cx, String label) throws SQLException {
+    public static void queryEdgeIdsByLabel(Connection cx, String label) throws SQLException {
         System.out.println("Label: " + label);
         long t0 = System.nanoTime();
-        String sql = "SELECT id FROM edges WHERE label = ?";
-        long count = 0L;
-        try (PreparedStatement ps = cx.prepareStatement(sql)) {
-            ps.setFetchSize(10_000);
-            ps.setString(1, label);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    count++;
-                    if (count <= 10) System.out.println("  Edge ID: " + rs.getString(1));
-                }
-            }
-        }
+        long[] count = new long[1];
+        long total = forEachEdgeIdByLabel(cx, label, eid -> {
+            count[0]++;
+            if (count[0] <= 10) System.out.println("  Edge ID: " + eid);
+        });
         long t1 = System.nanoTime();
-        if (count > 10) System.out.println("  ... (total " + count + ")");
-        System.out.printf(Locale.ROOT, "Edges: %,d. Time: %.3f ms%n", count, (t1 - t0)/1e6);
+        if (total > 10) System.out.println("  ... (total " + total + ")");
+        System.out.printf(Locale.ROOT, "Edges: %,d. Time: %.3f ms%n", total, (t1 - t0)/1e6);
     }
 
-    private static void queryNodesByPropEquals(Connection cx, String key, String value) throws SQLException {
+    public static void queryNodesByPropEquals(Connection cx, String key, String value) throws SQLException {
         System.out.println(key + " = " + value);
         long t0 = System.nanoTime();
-        String sql = "SELECT node_id FROM node_properties WHERE key = ? AND value = ?";
-        long count = 0L;
-        try (PreparedStatement ps = cx.prepareStatement(sql)) {
-            ps.setFetchSize(10_000);
-            ps.setString(1, key);
-            ps.setString(2, value);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    count++;
-                    if (count <= 10) System.out.println("  Node ID: " + rs.getString(1));
-                }
-            }
-        }
+        long[] count = new long[1];
+        long total = forEachNodeByPropertyEquals(cx, key, value, nid -> {
+            count[0]++;
+            if (count[0] <= 10) System.out.println("  Node ID: " + nid);
+        });
         long t1 = System.nanoTime();
-        if (count > 10) System.out.println("  ... (total " + count + ")");
-        System.out.printf(Locale.ROOT, "Nodes: %,d. Time: %.3f ms%n", count, (t1 - t0)/1e6);
+        if (total > 10) System.out.println("  ... (total " + total + ")");
+        System.out.printf(Locale.ROOT, "Nodes: %,d. Time: %.3f ms%n", total, (t1 - t0)/1e6);
     }
 
     private static String nonNull(String s){ return (s == null) ? "" : s; }
