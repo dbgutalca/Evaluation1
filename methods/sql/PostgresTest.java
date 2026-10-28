@@ -21,17 +21,28 @@ public class PostgresTest {
     }
 
     public static void main(String[] args) {
-        String url  = args.length > 0 ? args[0] : "jdbc:postgresql://localhost:5432/test_graph";
-        String user = args.length > 1 ? args[1] : "postgres";
-        String pass = args.length > 2 ? args[2] : "postgres";
+        String url  = args.length > 0 ? args[0] : System.getProperty("pg.url", System.getenv().getOrDefault("PG_URL", "jdbc:postgresql://localhost:5432/postgres"));
+        String user = args.length > 1 ? args[1] : System.getProperty("pg.user", System.getenv().getOrDefault("PG_USER", "postgres"));
+        String pass = args.length > 2 ? args[2] : System.getProperty("pg.pass", System.getenv().getOrDefault("PG_PASS", "postgres"));
 
         // Check if database is reachable before proceeding
         try (Connection testCx = DriverManager.getConnection(url, user, pass)) {
             // Connection successful
+        } catch (java.sql.SQLException e) {
+            String sqlState = e.getSQLState() != null ? e.getSQLState() : "";
+            String msg = e.getMessage() != null ? e.getMessage() : "";
+            if (sqlState.startsWith("08") || (msg.toLowerCase().contains("connection to") && msg.toLowerCase().contains("refused"))) {
+                System.out.println("[SKIP] PostgreSQL server is not running on target host (" + msg.trim() + ").");
+                System.out.println("Skipping PostgreSQL test on this machine.");
+                return;
+            }
+            System.err.println("[ERROR] PostgreSQL connection failed: " + msg.trim());
+            System.err.println("[ERROR] Server responded, but credentials or database name in PG_URL/PG_USER/PG_PASS might be wrong.");
+            System.err.println("[ERROR] Target URL: " + url + " | User: " + user);
+            System.exit(1);
         } catch (Exception e) {
-            System.out.println("[SKIP] PostgreSQL not reachable at " + url + " (" + e.getMessage() + ")");
-            System.out.println("Skipping PostgreSQL test on this machine.");
-            return;
+            System.err.println("[ERROR] Unexpected error connecting to PostgreSQL: " + e.getMessage());
+            System.exit(1);
         }
 
         System.out.println("Starting PostgreSQL Unit Tests against: " + url + " (user: " + user + ")...");

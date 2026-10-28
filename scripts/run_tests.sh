@@ -15,6 +15,19 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# Load .env file if present
+if [ -f "${ROOT_DIR}/.env" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "${ROOT_DIR}/.env"
+    set +a
+elif [ -f "${SCRIPT_DIR}/.env" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "${SCRIPT_DIR}/.env"
+    set +a
+fi
+
 # Colors
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -23,7 +36,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Default Credentials
-PG_URL="${PG_URL:-jdbc:postgresql://localhost:5432/test_graph}"
+PG_URL="${PG_URL:-jdbc:postgresql://localhost:5432/postgres}"
 PG_USER="${PG_USER:-postgres}"
 PG_PASS="${PG_PASS:-postgres}"
 
@@ -139,12 +152,14 @@ run_postgres() {
         echo -e "${GREEN}✓ PostgreSQL: All tests completed successfully.${NC}"
         record_result "PostgreSQL" "PASS" "Q1, Q2, Q3, Ingest, Benchmark OK"
     elif echo "$output" | grep -q "\[SKIP\]"; then
-        echo -e "${YELLOW}⚠ PostgreSQL: Server offline at ${PG_URL}. Skipped.${NC}"
+        local reason
+        reason=$(echo "$output" | grep "\[SKIP\]" | head -n 1)
+        echo -e "${YELLOW}⚠ PostgreSQL: Skipped (${reason}).${NC}"
         record_result "PostgreSQL" "SKIP" "Server offline on port 5432"
     else
         echo -e "${RED}✗ PostgreSQL: Tests failed.${NC}"
         echo "$output" | tail -n 25
-        record_result "PostgreSQL" "FAIL" "Test execution failed"
+        record_result "PostgreSQL" "FAIL" "Connection or test execution failed"
     fi
 }
 
@@ -171,8 +186,8 @@ run_neo4j() {
         fi
     else
         echo -e "${RED}✗ Neo4j: Tests failed.${NC}"
-        echo "$output" | tail -n 25
-        record_result "Neo4j" "FAIL" "Maven test failed"
+        echo "$output" | grep -E "(\[ERROR\]|AuthenticationException|ServiceUnavailableException|AssertionError|FAILED)" | tail -n 15
+        record_result "Neo4j" "FAIL" "Authentication or test execution failed"
     fi
 }
 

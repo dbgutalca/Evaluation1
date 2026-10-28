@@ -31,10 +31,17 @@ public class MainTest {
         try {
             driver = GraphDatabase.driver(uri, AuthTokens.basic(user, pass));
             driver.verifyConnectivity();
+        } catch (org.neo4j.driver.exceptions.AuthenticationException authEx) {
+            if (driver != null) { try { driver.close(); } catch (Exception ignore) {} }
+            System.err.println("[ERROR] Neo4j authentication failed for user: " + user);
+            System.err.println("[ERROR] Please check NEO4J_PASS in your .env file or environment.");
+            fail("Neo4j authentication failed for user '" + user + "': " + authEx.getMessage());
+            return;
         } catch (Exception e) {
             if (driver != null) {
                 try { driver.close(); } catch (Exception ignore) {}
             }
+            System.out.println("[SKIP] Neo4j server not reachable at " + uri + " (" + e.getMessage() + ")");
             Assume.assumeTrue("Neo4j server not reachable at " + uri + ". Skipping test on this machine. Details: " + e.getMessage(), false);
             return;
         }
