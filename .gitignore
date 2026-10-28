@@ -21,3 +21,6 @@
 .env
 .env.*
 !.env.example
+
+# internal documentation
+*_internal.md

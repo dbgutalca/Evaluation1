@@ -96,8 +96,12 @@ public class Main {
         System.exit(2);
     }
 
-    public static final String CYPHER_GET_NODE = "MATCH (n:Node {id: $id}) RETURN n";
+    public static final String CYPHER_GET_NODE = "MATCH (n:Node) WHERE n.id = $id RETURN n";
     public static final String CYPHER_NODES_BY_PROP = "MATCH (n:Node) WHERE properties(n)[$key] = $val RETURN n.id AS id";
+
+    public static String getCypherNodesByProp(String key) {
+        return String.format("MATCH (n:Node) WHERE n.`%s` = $val RETURN n.id AS id", key.replace("`", "``"));
+    }
 
     public static Map<String, Object> getNode(Session session, String id) {
         Result result = session.run(CYPHER_GET_NODE, parameters("id", id));
@@ -124,7 +128,8 @@ public class Main {
     }
 
     public static long forEachNodeByPropertyEquals(Session session, String key, String value, java.util.function.Consumer<String> consumer) {
-        Result result = session.run(CYPHER_NODES_BY_PROP, parameters("key", key, "val", value));
+        String query = getCypherNodesByProp(key);
+        Result result = session.run(query, parameters("val", value));
         long count = 0;
         while (result.hasNext()) {
             String nid = result.next().get("id").asString();
@@ -144,8 +149,9 @@ public class Main {
         System.out.println("Starting Ingest...");
         long t0 = System.nanoTime();
         
-        ingestNodes(session, nodesFile);
+        Set<String> propertyKeys = ingestNodes(session, nodesFile);
         ingestEdges(session, edgesFile);
+        createPropertyIndexes(session, propertyKeys);
         
         long t1 = System.nanoTime();
         System.out.printf(Locale.ROOT, "Ingest completed: %.3f ms%n", (t1 - t0) / 1e6);
@@ -215,12 +221,14 @@ public class Main {
         session.run("CREATE INDEX node_label IF NOT EXISTS FOR (n:Node) ON (n.label)");
     }
 
-    public static void ingestNodes(Session session, Path nodesPgdf) throws IOException {
+    public static Set<String> ingestNodes(Session session, Path nodesPgdf) throws IOException {
         final String cypher = """
             UNWIND $batch AS row
             CREATE (n:Node {id: row.id, label: row.label})
             SET n += row.props
             """;
+
+        Set<String> discoveredProps = new LinkedHashSet<>();
 
         try (BufferedReader br = Files.newBufferedReader(nodesPgdf, StandardCharsets.UTF_8)) {
             String line;
@@ -234,6 +242,12 @@ public class Main {
 
                 if (line.startsWith("@")) {
                     header = line.split("\\|", -1);
+                    for (String col : header) {
+                        String clean = col.trim();
+                        if (!clean.isEmpty() && !clean.startsWith("@") && !clean.equalsIgnoreCase("id") && !clean.equalsIgnoreCase("label")) {
+                            discoveredProps.add(clean);
+                        }
+                    }
                     continue;
                 }
                 if (header == null) continue;
@@ -253,7 +267,10 @@ public class Main {
                     String k = e.getKey();
                     if ("@id".equals(k) || "@label".equals(k)) continue;
                     String v = nonNull(e.getValue()).trim();
-                    if (!v.isEmpty()) props.put(k, v);
+                    if (!v.isEmpty()) {
+                        props.put(k, v);
+                        discoveredProps.add(k);
+                    }
                 }
 
                 Map<String, Object> nodeData = new HashMap<>();
@@ -282,7 +299,20 @@ public class Main {
 
             System.out.printf(Locale.ROOT, "  Nodes loaded: %,d%n", nCount);
         }
+        return discoveredProps;
     }
+
+    public static void createPropertyIndexes(Session session, Collection<String> properties) {
+        if (properties == null || properties.isEmpty()) return;
+        for (String prop : properties) {
+            String indexName = "idx_node_prop_" + prop.replaceAll("[^a-zA-Z0-9_]", "_");
+            String cql = String.format("CREATE INDEX %s IF NOT EXISTS FOR (n:Node) ON (n.`%s`)",
+                    indexName, prop.replace("`", "``"));
+            session.run(cql);
+        }
+        session.run("CALL db.awaitIndexes()");
+    }
+
 
     public static void ingestEdges(Session session, Path edgesPgdf) throws IOException {
         try (BufferedReader br = Files.newBufferedReader(edgesPgdf, StandardCharsets.UTF_8)) {

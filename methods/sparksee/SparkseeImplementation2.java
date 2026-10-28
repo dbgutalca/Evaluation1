@@ -263,7 +263,7 @@ public class SparkseeImplementation2 {
                     if (val == null || val.isEmpty()) continue;
 
                     DataType dt = guessType(name);
-                    int attrId = ensureAttribute(g, typeId, name, dt, AttributeKind.Basic);
+                    int attrId = ensureAttribute(g, typeId, name, dt, AttributeKind.Indexed);
                     setAttributeValue(g, oid, attrId, dt, val, v);
                 }
 
