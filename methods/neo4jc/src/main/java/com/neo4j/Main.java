@@ -39,19 +39,7 @@ public class Main {
                 Path nodesFile = Paths.get(args[3]);
                 Path edgesFile = Paths.get(args[4]);
 
-                clearDatabase(session);
-                ensureSchema(session);
-                
-                session.run("CALL db.awaitIndexes()");
-
-                System.out.println("Starting Ingest...");
-                long t0 = System.nanoTime();
-                
-                ingestNodes(session, nodesFile);
-                ingestEdges(session, edgesFile);
-                
-                long t1 = System.nanoTime();
-                System.out.printf(Locale.ROOT, "Ingest completed: %.3f ms%n", (t1 - t0) / 1e6);
+                runIngest(session, nodesFile, edgesFile);
                 return;
             }
 
@@ -108,6 +96,61 @@ public class Main {
         System.exit(2);
     }
 
+    public static final String CYPHER_GET_NODE = "MATCH (n:Node {id: $id}) RETURN n";
+    public static final String CYPHER_NODES_BY_PROP = "MATCH (n:Node) WHERE properties(n)[$key] = $val RETURN n.id AS id";
+
+    public static Map<String, Object> getNode(Session session, String id) {
+        Result result = session.run(CYPHER_GET_NODE, parameters("id", id));
+        if (result.hasNext()) {
+            Record rec = result.next();
+            return rec.get("n").asNode().asMap();
+        }
+        return null;
+    }
+
+    public static long forEachEdgeIdByLabel(Session session, String label, java.util.function.Consumer<String> consumer) {
+        String relType = relType(label);
+        String cypherEdges = "MATCH ()-[r:" + relType + "]->() RETURN r.id AS id";
+        Result result = session.run(cypherEdges);
+        long count = 0;
+        while (result.hasNext()) {
+            String eid = result.next().get("id").asString();
+            if (consumer != null) {
+                consumer.accept(eid);
+            }
+            count++;
+        }
+        return count;
+    }
+
+    public static long forEachNodeByPropertyEquals(Session session, String key, String value, java.util.function.Consumer<String> consumer) {
+        Result result = session.run(CYPHER_NODES_BY_PROP, parameters("key", key, "val", value));
+        long count = 0;
+        while (result.hasNext()) {
+            String nid = result.next().get("id").asString();
+            if (consumer != null) {
+                consumer.accept(nid);
+            }
+            count++;
+        }
+        return count;
+    }
+
+    public static void runIngest(Session session, Path nodesFile, Path edgesFile) throws IOException {
+        clearDatabase(session);
+        ensureSchema(session);
+        session.run("CALL db.awaitIndexes()");
+
+        System.out.println("Starting Ingest...");
+        long t0 = System.nanoTime();
+        
+        ingestNodes(session, nodesFile);
+        ingestEdges(session, edgesFile);
+        
+        long t1 = System.nanoTime();
+        System.out.printf(Locale.ROOT, "Ingest completed: %.3f ms%n", (t1 - t0) / 1e6);
+    }
+
     public static void benchmarking(Session session, Path idsPath, Path labelsPath, Path propsPath) throws IOException {
         List<String> ids = Files.readAllLines(idsPath);
         List<String> labels = Files.readAllLines(labelsPath);
@@ -117,15 +160,9 @@ public class Main {
 
         long totalGetNode = 0;
         System.out.println("\ngetNode");
-        String cypherNode = "MATCH (n:Node {id: $id}) RETURN n";
-        
         for (String id : ids) {
             long t0 = System.nanoTime();
-            Result result = session.run(cypherNode, parameters("id", id));
-            if (result.hasNext()) {
-                Record rec = result.next();
-                rec.get("n").asNode().asMap(); 
-            }
+            getNode(session, id);
             long t1 = System.nanoTime();
             long diff = t1 - t0;
             totalGetNode += diff;
@@ -134,18 +171,9 @@ public class Main {
 
         long totalLabels = 0;
         System.out.println("\nqueryEdgeIdsByLabel");
-        
         for (String label : labels) {
-            long count = 0;
-            String relType = relType(label);
-            String cypherEdges = "MATCH ()-[r:" + relType + "]->() RETURN r.id AS id";
-            
             long t0 = System.nanoTime();
-            Result result = session.run(cypherEdges);
-            while (result.hasNext()) {
-                result.next().get("id").asString();
-                count++;
-            }
+            long count = forEachEdgeIdByLabel(session, label, null);
             long t1 = System.nanoTime();
             long diff = t1 - t0;
             totalLabels += diff;
@@ -154,21 +182,14 @@ public class Main {
 
         long totalProps = 0;
         System.out.println("\nqueryNodesByPropEquals");
-        String cypherProps = "MATCH (n:Node) WHERE properties(n)[$key] = $val RETURN n.id AS id";
-
         for (String line : props) {
             String[] kv = line.split("=", 2);
             if (kv.length < 2) continue;
             String k = kv[0];
             String v = kv[1];
-            long count = 0;
             
             long t0 = System.nanoTime();
-            Result result = session.run(cypherProps, parameters("key", k, "val", v));
-            while (result.hasNext()) {
-                result.next().get("id").asString();
-                count++;
-            }
+            long count = forEachNodeByPropertyEquals(session, k, v, null);
             long t1 = System.nanoTime();
             long diff = t1 - t0;
             totalProps += diff;
@@ -189,12 +210,12 @@ public class Main {
         System.out.printf(Locale.ROOT, "%-28s | Total: %8.3f ms | Avg: %8.4f ms | Count: %d%n", op, totalMs, avgMs, count);
     }
 
-    private static void ensureSchema(Session session) {
+    public static void ensureSchema(Session session) {
         session.run("CREATE INDEX node_id IF NOT EXISTS FOR (n:Node) ON (n.id)");
         session.run("CREATE INDEX node_label IF NOT EXISTS FOR (n:Node) ON (n.label)");
     }
 
-    private static void ingestNodes(Session session, Path nodesPgdf) throws IOException {
+    public static void ingestNodes(Session session, Path nodesPgdf) throws IOException {
         final String cypher = """
             UNWIND $batch AS row
             CREATE (n:Node {id: row.id, label: row.label})
@@ -263,7 +284,7 @@ public class Main {
         }
     }
 
-    private static void ingestEdges(Session session, Path edgesPgdf) throws IOException {
+    public static void ingestEdges(Session session, Path edgesPgdf) throws IOException {
         try (BufferedReader br = Files.newBufferedReader(edgesPgdf, StandardCharsets.UTF_8)) {
             String line = br.readLine();
             if (line == null) {
@@ -327,7 +348,7 @@ public class Main {
         }
     }
 
-    private static void executeEdgeBatch(Transaction tx, List<Map<String, Object>> batch) {
+    public static void executeEdgeBatch(Transaction tx, List<Map<String, Object>> batch) {
         Map<String, List<Map<String, Object>>> grouped = new HashMap<>();
         for (Map<String, Object> edge : batch) {
             String label = (String) edge.get("label");
@@ -350,22 +371,18 @@ public class Main {
     }
 
     // -g <node_id>
-    private static void queryNodeWithAllProps(Session session, String nodeId) {
+    public static void queryNodeWithAllProps(Session session, String nodeId) {
         System.out.println("Querying Node ID: " + nodeId);
         long t0 = System.nanoTime();
         
-        String cypher = "MATCH (n:Node {id: $id}) RETURN n";
-        Result result = session.run(cypher, parameters("id", nodeId));
+        Map<String, Object> props = getNode(session, nodeId);
 
-        if (!result.hasNext()) {
+        if (props == null) {
             System.out.println("Node not found: " + nodeId);
             long t1 = System.nanoTime(); 
             System.out.printf(Locale.ROOT, "Query time: %.3f ms%n", (t1 - t0) / 1e6);
             return;
         }
-        Record rec = result.next();
-        var node = rec.get("n").asNode();
-        Map<String,Object> props = node.asMap();
 
         Object label = props.getOrDefault("label", "");
         System.out.println("Label: " + label);
@@ -380,85 +397,70 @@ public class Main {
     }
 
     // -gl <label>  
-    private static void queryEdgeIdsByLabel(Session session, String label) {
+    public static void queryEdgeIdsByLabel(Session session, String label) {
         System.out.println("Querying edges with Label: " + label);
         long t0 = System.nanoTime();
         
-        String relType = relType(label);
-        String cypher = "MATCH ()-[r:" + relType + "]->() RETURN r.id AS id";
-        Result result = session.run(cypher);
-
-        long count = 0;
-        final long LIMIT_PRINT = 10;
-        while (result.hasNext()) {
-            Record rec = result.next();
-            count++;
-            if (count <= LIMIT_PRINT) {
-                System.out.println("  Found Edge ID: " + rec.get("id").asString());
+        long[] count = new long[1];
+        long total = forEachEdgeIdByLabel(session, label, eid -> {
+            count[0]++;
+            if (count[0] <= 10) {
+                System.out.println("  Found Edge ID: " + eid);
             }
-        }
-        if (count > LIMIT_PRINT) {
-            System.out.println("  ... (total " + count + ")");
+        });
+        if (total > 10) {
+            System.out.println("  ... (total " + total + ")");
         }
         
         long t1 = System.nanoTime();
-        System.out.printf(Locale.ROOT, "Total edges: %,d. Query time: %.3f ms%n", count, (t1 - t0) / 1e6);
+        System.out.printf(Locale.ROOT, "Total edges: %,d. Query time: %.3f ms%n", total, (t1 - t0) / 1e6);
     }
 
     // -nv <key=value> 
-    private static void queryNodesByPropEquals(Session session, String key, String value) {
+    public static void queryNodesByPropEquals(Session session, String key, String value) {
         System.out.println("Querying nodes where " + key + " = " + value);
         long t0 = System.nanoTime();
         
-        String cypher = """
-        MATCH (n:Node)
-        WHERE properties(n)[$key] = $val
-        RETURN n.id AS id
-        """;
-        Result result = session.run(cypher, parameters("key", key, "val", value));
-
-        long count = 0;
-        final long LIMIT_PRINT = 10;
-        while (result.hasNext()) {
-            Record rec = result.next();
-            count++;
-            if (count <= LIMIT_PRINT) {
-                System.out.println("  Found Node ID: " + rec.get("id").asString());
+        long[] count = new long[1];
+        long total = forEachNodeByPropertyEquals(session, key, value, nid -> {
+            count[0]++;
+            if (count[0] <= 10) {
+                System.out.println("  Found Node ID: " + nid);
             }
-        }
-        if (count > LIMIT_PRINT) {
-            System.out.println("  ... (total " + count + ")");
+        });
+        if (total > 10) {
+            System.out.println("  ... (total " + total + ")");
         }
         
         long t1 = System.nanoTime();
-        System.out.printf(Locale.ROOT, "Total nodes: %,d. Query time: %.3f ms%n", count, (t1 - t0) / 1e6);
+        System.out.printf(Locale.ROOT, "Total nodes: %,d. Query time: %.3f ms%n", total, (t1 - t0) / 1e6);
     }
 
     // helpers
 
-    private static String nonNull(String s){ return (s == null) ? "" : s; }
+    public static String nonNull(String s){ return (s == null) ? "" : s; }
     
-    private static String safe(String[] a, Integer i){
+    public static String safe(String[] a, Integer i){
         if (i == null || i < 0 || i >= a.length) return "";
         String s = a[i];
         return s == null ? "" : s;
     }
     
-    private static String makeEdgeId(String src, String label, String dst) {
+    public static String makeEdgeId(String src, String label, String dst) {
         String s = src + "|" + label + "|" + dst;
         long x = 1125899906842597L;
         for (int i=0;i<s.length();i++) x = (x * 1315423911L) ^ s.charAt(i);
         return Long.toUnsignedString(x);
     }
 
-    private static String relType(String label) {
+    public static String relType(String label) {
         String norm = label.replaceAll("[^A-Z0-9_]", "_");
         if (norm.isEmpty()) norm = "REL";
         if (Character.isDigit(norm.charAt(0))) norm = "_" + norm;
         return norm;
     }
     
-    private static void clearDatabase(Session session) {
+    public static void clearDatabase(Session session) {
         System.out.println("Preparing DB for ingest (Clear)...");
         long total = 0;
         final int LIMIT = 5000; 
