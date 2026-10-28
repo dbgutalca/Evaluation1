@@ -24,6 +24,26 @@ public class SparkseeImplementation2 {
             usage();
         }
 
+        if (args.length == 2 && ("ingest".equals(args[0]) || "bench".equals(args[0]))) {
+            Path configPath = Paths.get(args[1]).toAbsolutePath();
+            Path baseDir = configPath.getParent();
+            Properties cfg = loadConfig(configPath.toString());
+            String dbPath = resolvePath(baseDir, cfg.getProperty("sparksee_db", "dbs/sparksee.gdb")).toString();
+            SparkseeImplementation2 app = new SparkseeImplementation2();
+            if ("ingest".equals(args[0])) {
+                System.out.println("Starting Ingest...");
+                String nodesPath = resolvePath(baseDir, cfg.getProperty("nodes_path")).toString();
+                String edgesPath = resolvePath(baseDir, cfg.getProperty("edges_path")).toString();
+                app.runIngest(nodesPath, edgesPath, dbPath);
+            } else {
+                Path idsPath = resolvePath(baseDir, cfg.getProperty("ids_path"));
+                Path labelsPath = resolvePath(baseDir, cfg.getProperty("labels_path"));
+                Path propsPath = resolvePath(baseDir, cfg.getProperty("props_path"));
+                app.benchmarking(dbPath, idsPath, labelsPath, propsPath);
+            }
+            return;
+        }
+
         Map<String, String> params = new HashMap<>();
         List<String> benchFiles = new ArrayList<>();
         boolean isBench = false;
@@ -83,10 +103,14 @@ public class SparkseeImplementation2 {
     private static void usage() {
         System.err.println("""
             Usage:
-              Ingest:    
+              Config mode:
+                java ... ingest <benchmark.properties>
+                java ... bench <benchmark.properties>
+
+              Direct Ingest:    
                 java ... -n Nodes.pgdf -e Edges.pgdf -d graph.gdb
               
-              Benchmark: 
+              Direct Benchmark: 
                 java ... -d graph.gdb -bench <ids_file> <labels_file> <props_file>
 
               Queries:
@@ -95,6 +119,20 @@ public class SparkseeImplementation2 {
                 java ... -d graph.gdb -nv <attr=val>
             """);
         System.exit(1);
+    }
+
+    public static Properties loadConfig(String path) throws IOException {
+        Properties props = new Properties();
+        try (java.io.InputStream in = Files.newInputStream(Paths.get(path))) {
+            props.load(in);
+        }
+        return props;
+    }
+
+    public static Path resolvePath(Path baseDir, String pathStr) {
+        if (pathStr == null || pathStr.isBlank()) return null;
+        Path p = Paths.get(pathStr);
+        return p.isAbsolute() ? p : baseDir.resolve(p).normalize();
     }
 
     public void benchmarking(String dbPath, Path idsPath, Path labelsPath, Path propsPath) throws Exception {

@@ -1,12 +1,20 @@
 Needs sparksee.cfg file
 
 Compile: javac -cp sparkseejava.jar SparkseeImplementation2.java
-Ingest:  java  -cp sparkseejava.jar:.  SparkseeImplementation2 -n <nodes_file> -e <edges_file> -d <db_name>
-Benchmark: java  -cp sparkseejava.jar:.  SparkseeImplementation2  -d gbd -bench <ids_file> <labels_file> <properties_file>
+
+Config Mode:
+  Ingest:    java -cp sparkseejava.jar:. SparkseeImplementation2 ingest <benchmark.properties>
+  Benchmark: java -cp sparkseejava.jar:. SparkseeImplementation2 bench <benchmark.properties>
+
+Direct Mode:
+  Ingest:    java -cp sparkseejava.jar:. SparkseeImplementation2 -n <nodes_file> -e <edges_file> -d <db_name>
+  Benchmark: java -cp sparkseejava.jar:. SparkseeImplementation2 -d <db_name> -bench <ids_file> <labels_file> <properties_file>
+
 Queries:
-    -   java  -cp sparkseejava.jar:.  SparkseeImplementation2 -d <db_name> -g <node_id>
-    -   java  -cp sparkseejava.jar:.  SparkseeImplementation2 -d <db_name> -gel <edge_label>
-    -   java  -cp sparkseejava.jar:.  SparkseeImplementation2 -d <db_name> -nv <property=value>
+    -  java -cp sparkseejava.jar:. SparkseeImplementation2 -d <db_name> -g <node_id>
+    -  java -cp sparkseejava.jar:. SparkseeImplementation2 -d <db_name> -gel <edge_label>
+    -  java -cp sparkseejava.jar:. SparkseeImplementation2 -d <db_name> -nv <property=value>
+
 Test:
-    -   javac -cp sparkseejava.jar:. SparkseeTest.java
-    -   java  -cp sparkseejava.jar:. SparkseeTest
+    -  javac -cp sparkseejava.jar:. SparkseeTest.java
+    -  java  -cp sparkseejava.jar:. SparkseeTest

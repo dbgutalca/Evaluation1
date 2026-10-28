@@ -24,6 +24,29 @@ public class Main {
     private static final int EDGE_BATCH = 100;
 
     public static void main(String[] args) throws Exception {
+        if (args.length == 2 && ("ingest".equals(args[0]) || "bench".equals(args[0]))) {
+            Path configPath = Paths.get(args[1]).toAbsolutePath();
+            Path baseDir = configPath.getParent();
+            Properties cfg = loadConfig(configPath.toString());
+            String uri = cfg.getProperty("neo4j_url", "bolt://localhost:7687");
+            String user = cfg.getProperty("neo4j_user", "neo4j");
+            String pass = cfg.getProperty("neo4j_pass", "password");
+            try (Driver driver = GraphDatabase.driver(uri, AuthTokens.basic(user, pass));
+                 Session session = driver.session()) {
+                if ("ingest".equals(args[0])) {
+                    Path nodesFile = resolvePath(baseDir, cfg.getProperty("nodes_path"));
+                    Path edgesFile = resolvePath(baseDir, cfg.getProperty("edges_path"));
+                    runIngest(session, nodesFile, edgesFile);
+                } else {
+                    Path idsPath = resolvePath(baseDir, cfg.getProperty("ids_path"));
+                    Path labelsPath = resolvePath(baseDir, cfg.getProperty("labels_path"));
+                    Path propsPath = resolvePath(baseDir, cfg.getProperty("props_path"));
+                    benchmarking(session, idsPath, labelsPath, propsPath);
+                }
+            }
+            return;
+        }
+
         if (args.length < 4) usage();
 
         String uri  = args[0];
@@ -81,11 +104,14 @@ public class Main {
     private static void usage() {
         System.err.println("""
             Usage:
+              Config mode:
+                mvn ... -Dexec.args="ingest <benchmark.properties>"
+                mvn ... -Dexec.args="bench <benchmark.properties>"
 
-              Ingest:
+              Direct Ingest:
                 mvn ... -Dexec.args="<uri> <user> <pass> <Nodes.pgdf> <Edges.pgdf>"
               
-              Benchmark:
+              Direct Benchmark:
                 mvn ... -Dexec.args="<uri> <user> <pass> bench <ids_file> <labels_file> <props_file>"
 
               Queries:
@@ -94,6 +120,20 @@ public class Main {
                 java ... -Dexec.args="<uri> <user> <pass> -nv <attr=val>"
             """);
         System.exit(2);
+    }
+
+    public static Properties loadConfig(String path) throws IOException {
+        Properties props = new Properties();
+        try (java.io.InputStream in = Files.newInputStream(Paths.get(path))) {
+            props.load(in);
+        }
+        return props;
+    }
+
+    public static Path resolvePath(Path baseDir, String pathStr) {
+        if (pathStr == null || pathStr.isBlank()) return null;
+        Path p = Paths.get(pathStr);
+        return p.isAbsolute() ? p : baseDir.resolve(p).normalize();
     }
 
     public static final String CYPHER_GET_NODE = "MATCH (n:Node) WHERE n.id = $id RETURN n";

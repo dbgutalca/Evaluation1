@@ -11,6 +11,30 @@ public class PostgresColumns {
     private static final int PROP_BATCH = 100_000;
 
     public static void main(String[] args) throws Exception {
+        if (args.length == 2 && ("ingest".equals(args[0]) || "bench".equals(args[0]))) {
+            Path configPath = Paths.get(args[1]).toAbsolutePath();
+            Path baseDir = configPath.getParent();
+            Properties cfg = loadConfig(configPath.toString());
+            String url = cfg.getProperty("postgres_url", "jdbc:postgresql://localhost:5432/postgres");
+            String user = cfg.getProperty("postgres_user", "postgres");
+            String pass = cfg.getProperty("postgres_pass", "postgres");
+            try (Connection cx = DriverManager.getConnection(url, user, pass)) {
+                cx.setAutoCommit(false);
+                if ("ingest".equals(args[0])) {
+                    Path nodesFile = resolvePath(baseDir, cfg.getProperty("nodes_path"));
+                    Path edgesFile = resolvePath(baseDir, cfg.getProperty("edges_path"));
+                    runIngest(cx, nodesFile, edgesFile);
+                } else {
+                    Path idsPath = resolvePath(baseDir, cfg.getProperty("ids_path"));
+                    Path labelsPath = resolvePath(baseDir, cfg.getProperty("labels_path"));
+                    Path propsPath = resolvePath(baseDir, cfg.getProperty("props_path"));
+                    benchmarking(cx, idsPath, labelsPath, propsPath);
+                }
+                cx.commit();
+            }
+            return;
+        }
+
         if (args.length < 4) {
             usage();
         }
@@ -70,10 +94,14 @@ public class PostgresColumns {
     private static void usage() {
         System.err.println("""
             Usage:
-              Ingest:
+              Config mode:
+                java ... ingest <benchmark.properties>
+                java ... bench <benchmark.properties>
+
+              Direct Ingest:
                 java ... <jdbc_url> <user> <pass> <Nodes.pgdf> <Edges.pgdf>
               
-              Benchmark:
+              Direct Benchmark:
                 java ... <jdbc_url> <user> <pass> bench <ids_file> <labels_file> <props_file>
 
               Queries:
@@ -82,6 +110,20 @@ public class PostgresColumns {
                 java ... <jdbc_url> <user> <pass> -nv <key=value>
             """);
         System.exit(2);
+    }
+
+    public static Properties loadConfig(String path) throws IOException {
+        Properties props = new Properties();
+        try (java.io.InputStream in = Files.newInputStream(Paths.get(path))) {
+            props.load(in);
+        }
+        return props;
+    }
+
+    public static Path resolvePath(Path baseDir, String pathStr) {
+        if (pathStr == null || pathStr.isBlank()) return null;
+        Path p = Paths.get(pathStr);
+        return p.isAbsolute() ? p : baseDir.resolve(p).normalize();
     }
 
     public static final String SQL_GET_NODE = "SELECT label, key, value FROM node_properties WHERE node_id = ?";

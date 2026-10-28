@@ -1,0 +1,47 @@
+# ==============================================================================
+# Benchmark Configuration Template
+# ==============================================================================
+# Usage:
+#   Copy this file to benchmark.properties and adjust paths for your local VM environment.
+#   cp benchmark.properties.example benchmark.properties
+#
+# Path Resolution Rules:
+#   - Relative paths (e.g. Nodes.pgdf or data/Nodes.pgdf) are automatically resolved
+#     relative to the location of this benchmark.properties file.
+#   - Absolute paths (e.g. /data/Nodes.pgdf or /mnt/nvme/Nodes.pgdf) are used as-is.
+#   - Therefore, a single copy of Nodes.pgdf and Edges.pgdf at repository root or
+#     any storage mount is shared across all 5 engines with zero duplication.
+# ==============================================================================
+
+# Scale Factor Identifier (e.g. sf01, sf1, sf3, sf10)
+scale_factor=sf1
+
+# Dataset files (PGDF format)
+nodes_path=data/sf1/Nodes.pgdf
+edges_path=data/sf1/Edges.pgdf
+
+# Query workload parameter files (generated via generate_params.py)
+ids_path=params/ids_sf1
+labels_path=params/labels
+props_path=params/props_sf1
+
+# Output directory for CSV benchmark metrics
+results_dir=results
+
+# ------------------------------------------------------------------------------
+# Storage paths for embedded engines
+# ------------------------------------------------------------------------------
+rocksdb_dir=dbs/rocks_sf1
+mapdb_dir=dbs/mapdb_sf1
+sparksee_db=dbs/sparksee_sf1.gdb
+
+# ------------------------------------------------------------------------------
+# Client-Server engine connection settings
+# ------------------------------------------------------------------------------
+postgres_url=jdbc:postgresql://localhost:5432/postgres
+postgres_user=postgres
+postgres_pass=postgres
+
+neo4j_url=bolt://localhost:7687
+neo4j_user=neo4j
+neo4j_pass=password

@@ -22,5 +22,11 @@
 .env.*
 !.env.example
 
+# Benchmark configurations and results
+benchmark.properties
+*.properties.local
+results/
+!benchmark.properties.example
+
 # internal documentation
 *_internal.md

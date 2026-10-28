@@ -34,6 +34,31 @@ public class Main implements AutoCloseable {
     public static void main(String[] args) throws Exception {
         if (args.length < 1) usage();
 
+        if (args.length == 2 && ("ingest".equals(args[0]) || "bench".equals(args[0]))) {
+            Path configPath = Path.of(args[1]).toAbsolutePath();
+            Path baseDir = configPath.getParent();
+            Properties cfg = loadConfig(configPath.toString());
+            Path dbPath = resolvePath(baseDir, cfg.getProperty("mapdb_dir", "dbs/mapdb"));
+            try (Main store = Main.open(dbPath)) {
+                if ("ingest".equals(args[0])) {
+                    Path nodes = resolvePath(baseDir, cfg.getProperty("nodes_path"));
+                    Path edges = resolvePath(baseDir, cfg.getProperty("edges_path"));
+                    System.out.println("Starting Ingest...");
+                    long t0 = System.nanoTime();
+                    store.ingestNodes(nodes);
+                    store.ingestEdges(edges);
+                    long t1 = System.nanoTime();
+                    System.out.printf(Locale.ROOT, "Ingest completed: %.3f ms%n", (t1 - t0) / 1e6);
+                } else {
+                    Path idsPath = resolvePath(baseDir, cfg.getProperty("ids_path"));
+                    Path labelsPath = resolvePath(baseDir, cfg.getProperty("labels_path"));
+                    Path propsPath = resolvePath(baseDir, cfg.getProperty("props_path"));
+                    store.benchmarking(idsPath, labelsPath, propsPath);
+                }
+            }
+            return;
+        }
+
         if (Objects.equals(args[0], "ingest")) {
             if (args.length < 4) usage();
             Path nodes = Path.of(args[1]);
@@ -122,10 +147,14 @@ public class Main implements AutoCloseable {
     private static void usage() {
         System.err.println("""
           Usage:
-            Ingest:
+            Config mode:
+              java ... ingest <benchmark.properties>
+              java ... bench <benchmark.properties>
+
+            Direct Ingest:
               java ... ingest <nodes.pgdf> <edges.pgdf> <db_path>
 
-            Benchmark:
+            Direct Benchmark:
               java ... <db_path> bench <ids_file> <labels_file> <props_file>
 
             Queries:
@@ -134,6 +163,20 @@ public class Main implements AutoCloseable {
               java ... <db_path> -nv <key=value>
         """);
         System.exit(2);
+    }
+
+    public static Properties loadConfig(String path) throws IOException {
+        Properties props = new Properties();
+        try (java.io.InputStream in = Files.newInputStream(Path.of(path))) {
+            props.load(in);
+        }
+        return props;
+    }
+
+    public static Path resolvePath(Path baseDir, String pathStr) {
+        if (pathStr == null || pathStr.isBlank()) return null;
+        Path p = Path.of(pathStr);
+        return p.isAbsolute() ? p : baseDir.resolve(p).normalize();
     }
 
     public void benchmarking(Path idsPath, Path labelsPath, Path propsPath) throws IOException {

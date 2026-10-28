@@ -1,11 +1,16 @@
-Requires to manually create the indexes in the required properties 
+Config Mode:
+  Ingest:    mvn compile -q exec:java -Dexec.mainClass="com.neo4j.Main" -Dexec.args="ingest <benchmark.properties>"
+  Benchmark: mvn compile -q exec:java -Dexec.mainClass="com.neo4j.Main" -Dexec.args="bench <benchmark.properties>"
 
-Ingest: mvn compile -q exec:java -Dexec.mainClass="com.neo4j.Main" -Dexec.args="bolt://localhost:7687 <db_user> <db_pass> <nodes_file> <edges_file>
-Benchmark: mvn compile -q exec:java -Dexec.mainClass="com.neo4j.Main" -Dexec.args="bolt://localhost:7687 <db_user> <db_pass> bench <ids_file> <labels_file> <properties_file>
+Direct Mode:
+  Ingest:    mvn compile -q exec:java -Dexec.mainClass="com.neo4j.Main" -Dexec.args="bolt://localhost:7687 <db_user> <db_pass> <nodes_file> <edges_file>"
+  Benchmark: mvn compile -q exec:java -Dexec.mainClass="com.neo4j.Main" -Dexec.args="bolt://localhost:7687 <db_user> <db_pass> bench <ids_file> <labels_file> <properties_file>"
+
 Queries:
     -  mvn compile -q exec:java -Dexec.mainClass="com.neo4j.Main" -Dexec.args="bolt://localhost:7687 <db_user> <db_pass> -g <node_id>"
     -  mvn compile -q exec:java -Dexec.mainClass="com.neo4j.Main" -Dexec.args="bolt://localhost:7687 <db_user> <db_pass> -gel <edge_label>"
     -  mvn compile -q exec:java -Dexec.mainClass="com.neo4j.Main" -Dexec.args="bolt://localhost:7687 <db_user> <db_pass> -nv <property=value>"
+
 Test:
     -  mvn test
     -  mvn test -Dneo4j.uri=bolt://localhost:7687 -Dneo4j.user=<db_user> -Dneo4j.pass=<db_pass>
