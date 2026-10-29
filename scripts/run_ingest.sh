@@ -175,7 +175,7 @@ ingest_rocksdb() {
 
     if [ $exit_code -eq 0 ]; then
         echo -e "${GREEN}✓ [${engine}] Ingest completed successfully.${NC}"
-        record_status "$engine" "PASS" "Saved to ingest.csv"
+        record_status "$engine" "PASS" "Saved to ingest_rocksdb.csv"
     elif [ $exit_code -eq 137 ]; then
         echo -e "${RED}✗ [${engine}] Ingest failed: Out of Memory (OOM / Killed).${NC}"
         record_status "$engine" "FAIL" "Killed by OOM (exit code 137)"
@@ -203,7 +203,7 @@ ingest_mapdb() {
 
     if [ $exit_code -eq 0 ]; then
         echo -e "${GREEN}✓ [${engine}] Ingest completed successfully.${NC}"
-        record_status "$engine" "PASS" "Saved to ingest.csv"
+        record_status "$engine" "PASS" "Saved to ingest_mapdb.csv"
     elif [ $exit_code -eq 137 ]; then
         echo -e "${RED}✗ [${engine}] Ingest failed: Out of Memory (OOM / Killed).${NC}"
         record_status "$engine" "FAIL" "Killed by OOM (exit code 137)"
@@ -236,7 +236,7 @@ ingest_sparksee() {
 
     if [ $exit_code -eq 0 ]; then
         echo -e "${GREEN}✓ [${engine}] Ingest completed successfully.${NC}"
-        record_status "$engine" "PASS" "Saved to ingest.csv"
+        record_status "$engine" "PASS" "Saved to ingest_sparksee.csv"
     elif [ $exit_code -eq 137 ]; then
         echo -e "${RED}✗ [${engine}] Ingest failed: Out of Memory (OOM / Killed).${NC}"
         record_status "$engine" "FAIL" "Killed by OOM (exit code 137)"
@@ -269,7 +269,7 @@ ingest_postgres() {
 
     if [ $exit_code -eq 0 ]; then
         echo -e "${GREEN}✓ [${engine}] Ingest completed successfully.${NC}"
-        record_status "$engine" "PASS" "Saved to ingest.csv"
+        record_status "$engine" "PASS" "Saved to ingest_postgres.csv"
     elif [ $exit_code -eq 137 ]; then
         echo -e "${RED}✗ [${engine}] Ingest failed: Out of Memory (OOM / Killed).${NC}"
         record_status "$engine" "FAIL" "Killed by OOM (exit code 137)"
@@ -297,7 +297,7 @@ ingest_neo4j() {
 
     if [ $exit_code -eq 0 ]; then
         echo -e "${GREEN}✓ [${engine}] Ingest completed successfully.${NC}"
-        record_status "$engine" "PASS" "Saved to ingest.csv"
+        record_status "$engine" "PASS" "Saved to ingest_neo4j.csv"
     elif [ $exit_code -eq 137 ]; then
         echo -e "${RED}✗ [${engine}] Ingest failed: Out of Memory (OOM / Killed).${NC}"
         record_status "$engine" "FAIL" "Killed by OOM (exit code 137)"
@@ -340,6 +340,31 @@ case "$TARGET" in
         exit 2
         ;;
 esac
+
+# ------------------------------------------------------------------------------
+# Consolidate per-engine CSVs into a single ingest.csv
+# ------------------------------------------------------------------------------
+consolidate_ingest_csvs() {
+    local target_csv="${RESULTS_DIR}/ingest.csv"
+    local temp_csv="${RESULTS_DIR}/.ingest_consolidated.tmp"
+    local first=1
+    rm -f "$temp_csv"
+
+    for f in "${RESULTS_DIR}"/ingest_*.csv; do
+        [ -f "$f" ] || continue
+        if [ $first -eq 1 ]; then
+            head -n 1 "$f" >> "$temp_csv"
+            first=0
+        fi
+        tail -n +2 "$f" >> "$temp_csv"
+    done
+
+    if [ -f "$temp_csv" ]; then
+        mv "$temp_csv" "$target_csv"
+    fi
+}
+
+consolidate_ingest_csvs
 
 # ------------------------------------------------------------------------------
 # Summary Table

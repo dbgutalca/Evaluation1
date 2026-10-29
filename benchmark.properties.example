@@ -29,6 +29,27 @@ props_path=params/props_sf1
 results_dir=results
 
 # ------------------------------------------------------------------------------
+# Benchmark Protocol Settings
+# ------------------------------------------------------------------------------
+# Execution condition: cold | warm | both
+benchmark_condition=both
+
+# Number of warm-up iterations (unmeasured, discarded, for warm mode)
+warmup_iterations=3
+
+# Number of measured iterations for warm mode (CSV)
+measured_iterations=5
+
+# Number of cold repetitions (with drop_caches & process restart prior to each)
+cold_iterations=3
+
+# Random seed for reproducible query shuffling
+random_seed=42
+
+# Enable query shuffling per repetition (set to false to run strictly in file order)
+shuffle_queries=true
+
+# ------------------------------------------------------------------------------
 # Storage paths for embedded engines
 # ------------------------------------------------------------------------------
 rocksdb_dir=dbs/rocks_sf1

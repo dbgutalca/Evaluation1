@@ -34,7 +34,7 @@ public class Main implements AutoCloseable {
     public static void main(String[] args) throws Exception {
         if (args.length < 1) usage();
 
-        if (args.length == 2 && ("ingest".equals(args[0]) || "bench".equals(args[0]))) {
+        if (args.length >= 2 && ("ingest".equals(args[0]) || "bench".equals(args[0]))) {
             Path configPath = Path.of(args[1]).toAbsolutePath();
             Path baseDir = configPath.getParent();
             Properties cfg = loadConfig(configPath.toString());
@@ -47,10 +47,9 @@ public class Main implements AutoCloseable {
                     Path resultsDir = resolvePath(baseDir, cfg.getProperty("results_dir", "results"));
                     store.runIngest(nodes, edges, sf, resultsDir);
                 } else {
-                    Path idsPath = resolvePath(baseDir, cfg.getProperty("ids_path"));
-                    Path labelsPath = resolvePath(baseDir, cfg.getProperty("labels_path"));
-                    Path propsPath = resolvePath(baseDir, cfg.getProperty("props_path"));
-                    store.benchmarking(idsPath, labelsPath, propsPath);
+                    String overrideCondition = args.length >= 3 ? args[2] : null;
+                    Integer overrideRep = args.length >= 4 ? Integer.parseInt(args[3]) : null;
+                    store.runBenchmarkConfig(cfg, baseDir, overrideCondition, overrideRep);
                 }
             }
             return;
@@ -227,6 +226,123 @@ public class Main implements AutoCloseable {
         double totalMs = totalNs / 1e6;
         double avgMs = totalMs / count;
         System.out.printf(Locale.ROOT, "%-28s | Total: %8.3f ms | Avg: %8.4f ms | Count: %d%n", op, totalMs, avgMs, count);
+    }
+
+    public void runBenchmarkConfig(Properties cfg, Path baseDir, String overrideCond, Integer overrideRep) throws IOException {
+        Path idsPath = resolvePath(baseDir, cfg.getProperty("ids_path"));
+        Path labelsPath = resolvePath(baseDir, cfg.getProperty("labels_path"));
+        Path propsPath = resolvePath(baseDir, cfg.getProperty("props_path"));
+
+        String sf = cfg.getProperty("scale_factor", "sf1");
+        Path resultsDir = resolvePath(baseDir, cfg.getProperty("results_dir", "results"));
+        String targetCond = overrideCond != null ? overrideCond : cfg.getProperty("benchmark_condition", "warm");
+        int warmup = Integer.parseInt(cfg.getProperty("warmup_iterations", "3"));
+        int measured = Integer.parseInt(cfg.getProperty("measured_iterations", "5"));
+        long seed = Long.parseLong(cfg.getProperty("random_seed", "42"));
+        boolean shuffle = Boolean.parseBoolean(System.getProperty("shuffle_queries", cfg.getProperty("shuffle_queries", "true")));
+
+        List<String> ids = Files.readAllLines(idsPath);
+        List<String> labels = Files.readAllLines(labelsPath);
+        List<String> props = Files.readAllLines(propsPath);
+
+        Files.createDirectories(resultsDir);
+        Path csvPath = resultsDir.resolve("benchmark_mapdb.csv");
+
+        if ("cold".equalsIgnoreCase(targetCond)) {
+            int rep = overrideRep != null ? overrideRep : 1;
+            boolean writeHeader = !Files.exists(csvPath);
+            try (PrintWriter pw = new PrintWriter(Files.newBufferedWriter(csvPath, StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND))) {
+                if (writeHeader) {
+                    pw.println("engine,scale_factor,condition,repetition,query_type,param,time_ms,cardinality");
+                }
+                executeBenchmarkPass(ids, labels, props, "cold", rep, seed + rep, sf, pw, shuffle);
+            }
+        } else {
+            // Warm or Both: run warmup iterations (discarded), then measured iterations
+            System.out.printf(Locale.ROOT, "Executing %d warm-up passes (discarded)...%n", warmup);
+            for (int w = 1; w <= warmup; w++) {
+                executeBenchmarkPass(ids, labels, props, "warmup", w, seed - w, sf, null, shuffle);
+            }
+            System.out.printf(Locale.ROOT, "Executing %d measured warm passes...%n", measured);
+            boolean writeHeader = !Files.exists(csvPath);
+            try (PrintWriter pw = new PrintWriter(Files.newBufferedWriter(csvPath, StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND))) {
+                if (writeHeader) {
+                    pw.println("engine,scale_factor,condition,repetition,query_type,param,time_ms,cardinality");
+                }
+                for (int rep = 1; rep <= measured; rep++) {
+                    executeBenchmarkPass(ids, labels, props, "warm", rep, seed + rep, sf, pw, shuffle);
+                }
+            }
+        }
+    }
+
+    private void executeBenchmarkPass(List<String> idsOrig, List<String> labelsOrig, List<String> propsOrig,
+            String condition, int repetition, long seed, String sf, PrintWriter pw, boolean shuffle) {
+        List<String> ids = new ArrayList<>(idsOrig);
+        List<String> labels = new ArrayList<>(labelsOrig);
+        List<String> props = new ArrayList<>(propsOrig);
+
+        if (shuffle && seed >= 0) {
+            Random rnd = new Random(seed);
+            Collections.shuffle(ids, rnd);
+            Collections.shuffle(labels, rnd);
+            Collections.shuffle(props, rnd);
+        }
+
+        long totalQ1 = 0;
+        for (String id : ids) {
+            long t0 = System.nanoTime();
+            NodeBlob n = getNode(id);
+            long t1 = System.nanoTime();
+            long diff = t1 - t0;
+            totalQ1 += diff;
+            long card = (n != null) ? 1 : 0;
+            if (pw != null) {
+                pw.printf(Locale.ROOT, "mapdb,%s,%s,%d,Q1,%s,%.4f,%d%n",
+                        sf, condition, repetition, id, diff / 1e6, card);
+            }
+        }
+
+        long totalQ2 = 0;
+        for (String label : labels) {
+            AtomicLong count = new AtomicLong();
+            long t0 = System.nanoTime();
+            forEachEdgeIdByLabel(label, eid -> count.incrementAndGet());
+            long t1 = System.nanoTime();
+            long diff = t1 - t0;
+            totalQ2 += diff;
+            long card = count.get();
+            if (pw != null) {
+                pw.printf(Locale.ROOT, "mapdb,%s,%s,%d,Q2,%s,%.4f,%d%n",
+                        sf, condition, repetition, label, diff / 1e6, card);
+            }
+        }
+
+        long totalQ3 = 0;
+        for (String line : props) {
+            String[] kv = line.split("=", 2);
+            if (kv.length < 2) continue;
+            String k = kv[0];
+            String v = kv[1];
+            AtomicLong count = new AtomicLong();
+            long t0 = System.nanoTime();
+            forEachNodeByPropertyEquals(k, v, nid -> count.incrementAndGet());
+            long t1 = System.nanoTime();
+            long diff = t1 - t0;
+            totalQ3 += diff;
+            long card = count.get();
+            if (pw != null) {
+                pw.printf(Locale.ROOT, "mapdb,%s,%s,%d,Q3,%s,%.4f,%d%n",
+                        sf, condition, repetition, line, diff / 1e6, card);
+            }
+        }
+        if (pw != null) {
+            pw.flush();
+            System.out.printf(Locale.ROOT, "  [Rep %d (%s)] Q1: %.2f ms | Q2: %.2f ms | Q3: %.2f ms%n",
+                    repetition, condition, totalQ1 / 1e6, totalQ2 / 1e6, totalQ3 / 1e6);
+        }
     }
 
     private Main(DB db,
@@ -494,15 +610,12 @@ public class Main implements AutoCloseable {
         if (resultsDir == null) return;
         try {
             Files.createDirectories(resultsDir);
-            Path csvPath = resultsDir.resolve("ingest.csv");
-            boolean writeHeader = !Files.exists(csvPath);
+            Path csvPath = resultsDir.resolve("ingest_mapdb.csv");
             try (PrintWriter pw = new PrintWriter(Files.newBufferedWriter(csvPath, StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.APPEND))) {
-                if (writeHeader) {
-                    pw.println("engine,scale_factor,nodes_count,edges_count,t_insert_ms,t_index_ms,t_total_ms");
-                }
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE))) {
+                pw.println("engine,scale_factor,nodes_count,edges_count,t_insert_ms,t_index_ms,t_total_ms");
                 pw.printf(Locale.ROOT, "%s,%s,%d,%d,%.3f,%.3f,%.3f%n",
-                        engine, sf, nodesCount, edgesCount, tInsertMs, tIndexMs, tTotalMs);
+                        engine.toLowerCase(Locale.ROOT), sf, nodesCount, edgesCount, tInsertMs, tIndexMs, tTotalMs);
             }
         } catch (IOException e) {
             System.err.println("[WARN] Could not write ingest metrics to CSV: " + e.getMessage());
