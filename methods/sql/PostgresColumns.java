@@ -23,7 +23,9 @@ public class PostgresColumns {
                 if ("ingest".equals(args[0])) {
                     Path nodesFile = resolvePath(baseDir, cfg.getProperty("nodes_path"));
                     Path edgesFile = resolvePath(baseDir, cfg.getProperty("edges_path"));
-                    runIngest(cx, nodesFile, edgesFile);
+                    String sf = cfg.getProperty("scale_factor", "unknown");
+                    Path resultsDir = resolvePath(baseDir, cfg.getProperty("results_dir"));
+                    runIngest(cx, nodesFile, edgesFile, sf, resultsDir);
                 } else {
                     Path idsPath = resolvePath(baseDir, cfg.getProperty("ids_path"));
                     Path labelsPath = resolvePath(baseDir, cfg.getProperty("labels_path"));
@@ -275,15 +277,29 @@ public class PostgresColumns {
     }
 
     public static void runIngest(Connection cx, Path nodesFile, Path edgesFile) throws Exception {
-        System.out.println("Ingesting...");
+        runIngest(cx, nodesFile, edgesFile, null, null);
+    }
+
+    public static void runIngest(Connection cx, Path nodesFile, Path edgesFile, String scaleFactor, Path resultsDir) throws Exception {
+        System.out.println("Starting Ingest...");
         long t0 = System.nanoTime();
         ensureTables(cx);
-        ingestNodes(cx, nodesFile);
-        ingestEdges(cx, edgesFile);
+        long nodesCount = ingestNodes(cx, nodesFile);
+        long edgesCount = ingestEdges(cx, edgesFile);
         cx.commit(); 
-        createIndexes(cx);
         long t1 = System.nanoTime();
-        System.out.printf(Locale.ROOT, "Completed: %.3f ms%n", (t1 - t0)/1e6);
+        createIndexes(cx);
+        cx.commit();
+        long t2 = System.nanoTime();
+
+        double tInsert = (t1 - t0) / 1e6;
+        double tIndex = (t2 - t1) / 1e6;
+        double tTotal = (t2 - t0) / 1e6;
+
+        printIngestSummary("PostgreSQL", scaleFactor, nodesCount, edgesCount, tInsert, tIndex, tTotal);
+        if (resultsDir != null) {
+            recordIngestMetrics(resultsDir, "postgresql", scaleFactor, nodesCount, edgesCount, tInsert, tIndex, tTotal);
+        }
     }
 
     public static void ensureTables(Connection cx) throws SQLException {
@@ -330,7 +346,7 @@ public class PostgresColumns {
         cx.commit();
     }
 
-    public static void ingestNodes(Connection cx, Path nodesPgdf) throws IOException, SQLException {
+    public static long ingestNodes(Connection cx, Path nodesPgdf) throws IOException, SQLException {
         final String upsertNode = "INSERT INTO nodes(id,label) VALUES(?,?) ON CONFLICT (id) DO NOTHING"; 
         final String insertProp = "INSERT INTO node_properties(node_id,label,key,value) VALUES(?,?,?,?)";
 
@@ -395,17 +411,18 @@ public class PostgresColumns {
             cx.commit();
             
             System.out.printf(Locale.ROOT, "  Nodes processed: %,d%n", nCount);
+            return nCount;
         }
     } 
 
-    public static void ingestEdges(Connection cx, Path edgesPgdf) throws IOException, SQLException {
+    public static long ingestEdges(Connection cx, Path edgesPgdf) throws IOException, SQLException {
         final String insertEdge = "INSERT INTO edges(id,label,src,dst,directed) VALUES(?,?,?,?,?) ON CONFLICT (id) DO NOTHING";
 
         try (BufferedReader br = Files.newBufferedReader(edgesPgdf, StandardCharsets.UTF_8);
              PreparedStatement psEdge = cx.prepareStatement(insertEdge)) {
 
             String line = br.readLine();
-            if (line == null) return;
+            if (line == null) return 0;
             String[] header = line.split("\\|", -1);
             Map<String,Integer> idx = new HashMap<>();
             for (int i=0;i<header.length;i++) idx.put(header[i], i);
@@ -441,6 +458,7 @@ public class PostgresColumns {
             }
             if (eBatch > 0) psEdge.executeBatch();
             System.out.printf(Locale.ROOT, "  Edges processed: %,d%n", eCount);
+            return eCount;
         }
     }
 
@@ -496,5 +514,41 @@ public class PostgresColumns {
         long x = 1125899906842597L;
         for (int i=0;i<s.length();i++) x = (x * 1315423911L) ^ s.charAt(i);
         return Long.toUnsignedString(x);
+    }
+
+    public static void printIngestSummary(String engine, String sf, long nodesCount, long edgesCount,
+            double tInsertMs, double tIndexMs, double tTotalMs) {
+        System.out.println("\n==========================================");
+        System.out.printf(Locale.ROOT, "INGEST METRICS (%s)%n", engine);
+        System.out.println("==========================================");
+        if (sf != null && !sf.isBlank()) {
+            System.out.printf(Locale.ROOT, "Scale Factor : %s%n", sf);
+        }
+        System.out.printf(Locale.ROOT, "Nodes Loaded : %,d%n", nodesCount);
+        System.out.printf(Locale.ROOT, "Edges Loaded : %,d%n", edgesCount);
+        System.out.printf(Locale.ROOT, "Insert Time  : %10.3f ms%n", tInsertMs);
+        System.out.printf(Locale.ROOT, "Index Time   : %10.3f ms%n", tIndexMs);
+        System.out.printf(Locale.ROOT, "Total Time   : %10.3f ms%n", tTotalMs);
+        System.out.println("==========================================");
+    }
+
+    public static synchronized void recordIngestMetrics(Path resultsDir, String engine, String sf,
+            long nodesCount, long edgesCount, double tInsertMs, double tIndexMs, double tTotalMs) {
+        if (resultsDir == null) return;
+        try {
+            Files.createDirectories(resultsDir);
+            Path csvPath = resultsDir.resolve("ingest.csv");
+            boolean writeHeader = !Files.exists(csvPath);
+            try (PrintWriter pw = new PrintWriter(Files.newBufferedWriter(csvPath, StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND))) {
+                if (writeHeader) {
+                    pw.println("engine,scale_factor,nodes_count,edges_count,t_insert_ms,t_index_ms,t_total_ms");
+                }
+                pw.printf(Locale.ROOT, "%s,%s,%d,%d,%.3f,%.3f,%.3f%n",
+                        engine, sf, nodesCount, edgesCount, tInsertMs, tIndexMs, tTotalMs);
+            }
+        } catch (IOException e) {
+            System.err.println("[WARN] Could not write ingest metrics to CSV: " + e.getMessage());
+        }
     }
 }

@@ -8,6 +8,7 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
@@ -44,12 +45,9 @@ public class Main implements AutoCloseable {
                 if ("ingest".equals(args[0])) {
                     Path nodes = resolvePath(baseDir, cfg.getProperty("nodes_path"));
                     Path edges = resolvePath(baseDir, cfg.getProperty("edges_path"));
-                    System.out.println("Starting Ingest...");
-                    long t0 = System.nanoTime();
-                    store.ingestNodes(nodes);
-                    store.ingestEdges(edges);
-                    long t1 = System.nanoTime();
-                    System.out.printf(Locale.ROOT, "Ingest completed: %.3f ms%n", (t1 - t0) / 1e6);
+                    String sf = cfg.getProperty("scale_factor", "unknown");
+                    Path resultsDir = resolvePath(baseDir, cfg.getProperty("results_dir"));
+                    store.runIngest(nodes, edges, sf, resultsDir);
                 } else {
                     Path idsPath = resolvePath(baseDir, cfg.getProperty("ids_path"));
                     Path labelsPath = resolvePath(baseDir, cfg.getProperty("labels_path"));
@@ -67,14 +65,7 @@ public class Main implements AutoCloseable {
             Path dbPath = Path.of(args[3]);
 
             try (Main store = Main.open(dbPath)) {
-                System.out.println("Starting Ingest...");
-                long t0 = System.nanoTime();
-                
-                store.ingestNodes(nodes);
-                store.ingestEdges(edges);
-                
-                long t1 = System.nanoTime();
-                System.out.printf(Locale.ROOT, "Ingest completed: %.3f ms%n", (t1 - t0) / 1e6);
+                store.runIngest(nodes, edges);
             }
             return;
         }
@@ -392,7 +383,32 @@ public class Main implements AutoCloseable {
                             new String(db, StandardCharsets.UTF_8));
     }
 
-    public void ingestNodes(Path nodesPgdf) throws IOException, RocksDBException {
+    public void runIngest(Path nodes, Path edges) throws IOException, RocksDBException {
+        runIngest(nodes, edges, null, null);
+    }
+
+    public void runIngest(Path nodes, Path edges, String scaleFactor, Path resultsDir) throws IOException, RocksDBException {
+        System.out.println("Starting Ingest...");
+        long t0 = System.nanoTime();
+        long nodesCount = ingestNodes(nodes);
+        long edgesCount = ingestEdges(edges);
+        long t1 = System.nanoTime();
+        try (FlushOptions fo = new FlushOptions().setWaitForFlush(true)) {
+            db.flush(fo, allHandles);
+        }
+        long t2 = System.nanoTime();
+
+        double tInsert = (t1 - t0) / 1e6;
+        double tIndex = (t2 - t1) / 1e6;
+        double tTotal = (t2 - t0) / 1e6;
+
+        printIngestSummary("RocksDB", scaleFactor, nodesCount, edgesCount, tInsert, tIndex, tTotal);
+        if (resultsDir != null) {
+            recordIngestMetrics(resultsDir, "rocksdb", scaleFactor, nodesCount, edgesCount, tInsert, tIndex, tTotal);
+        }
+    }
+
+    public long ingestNodes(Path nodesPgdf) throws IOException, RocksDBException {
         try (final WriteOptions wo = new WriteOptions().setDisableWAL(true).setSync(false);
              final BufferedReader br = Files.newBufferedReader(nodesPgdf, StandardCharsets.UTF_8)) {
 
@@ -448,10 +464,11 @@ public class Main implements AutoCloseable {
             }
             batch.close();
             System.out.printf(Locale.ROOT, "  Nodes loaded: %,d%n", totalNodes);
+            return totalNodes;
         }
     }
 
-    public void ingestEdges(Path edgesPgdf) throws IOException, RocksDBException {
+    public long ingestEdges(Path edgesPgdf) throws IOException, RocksDBException {
         try (final WriteOptions wo = new WriteOptions().setDisableWAL(true).setSync(false);
              final BufferedReader br = Files.newBufferedReader(edgesPgdf, StandardCharsets.UTF_8)) {
 
@@ -504,6 +521,7 @@ public class Main implements AutoCloseable {
             }
             batch.close();
             System.out.printf(Locale.ROOT, "  Edges loaded: %,d%n", totalEdges);
+            return totalEdges;
         }
     }
 
@@ -544,5 +562,41 @@ public class Main implements AutoCloseable {
         long x = 1125899906842597L;
         for (int i=0;i<s.length();i++) x = (x * 1315423911L) ^ s.charAt(i);
         return Long.toUnsignedString(x);
+    }
+
+    public static void printIngestSummary(String engine, String sf, long nodesCount, long edgesCount,
+            double tInsertMs, double tIndexMs, double tTotalMs) {
+        System.out.println("\n==========================================");
+        System.out.printf(Locale.ROOT, "INGEST METRICS (%s)%n", engine);
+        System.out.println("==========================================");
+        if (sf != null && !sf.isBlank()) {
+            System.out.printf(Locale.ROOT, "Scale Factor : %s%n", sf);
+        }
+        System.out.printf(Locale.ROOT, "Nodes Loaded : %,d%n", nodesCount);
+        System.out.printf(Locale.ROOT, "Edges Loaded : %,d%n", edgesCount);
+        System.out.printf(Locale.ROOT, "Insert Time  : %10.3f ms%n", tInsertMs);
+        System.out.printf(Locale.ROOT, "Index Time   : %10.3f ms%n", tIndexMs);
+        System.out.printf(Locale.ROOT, "Total Time   : %10.3f ms%n", tTotalMs);
+        System.out.println("==========================================");
+    }
+
+    public static synchronized void recordIngestMetrics(Path resultsDir, String engine, String sf,
+            long nodesCount, long edgesCount, double tInsertMs, double tIndexMs, double tTotalMs) {
+        if (resultsDir == null) return;
+        try {
+            Files.createDirectories(resultsDir);
+            Path csvPath = resultsDir.resolve("ingest.csv");
+            boolean writeHeader = !Files.exists(csvPath);
+            try (PrintWriter pw = new PrintWriter(Files.newBufferedWriter(csvPath, StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND))) {
+                if (writeHeader) {
+                    pw.println("engine,scale_factor,nodes_count,edges_count,t_insert_ms,t_index_ms,t_total_ms");
+                }
+                pw.printf(Locale.ROOT, "%s,%s,%d,%d,%.3f,%.3f,%.3f%n",
+                        engine, sf, nodesCount, edgesCount, tInsertMs, tIndexMs, tTotalMs);
+            }
+        } catch (IOException e) {
+            System.err.println("[WARN] Could not write ingest metrics to CSV: " + e.getMessage());
+        }
     }
 }

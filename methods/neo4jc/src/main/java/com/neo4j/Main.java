@@ -11,6 +11,7 @@ import org.neo4j.driver.Record;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
@@ -36,7 +37,9 @@ public class Main {
                 if ("ingest".equals(args[0])) {
                     Path nodesFile = resolvePath(baseDir, cfg.getProperty("nodes_path"));
                     Path edgesFile = resolvePath(baseDir, cfg.getProperty("edges_path"));
-                    runIngest(session, nodesFile, edgesFile);
+                    String sf = cfg.getProperty("scale_factor", "unknown");
+                    Path resultsDir = resolvePath(baseDir, cfg.getProperty("results_dir"));
+                    runIngest(session, nodesFile, edgesFile, sf, resultsDir);
                 } else {
                     Path idsPath = resolvePath(baseDir, cfg.getProperty("ids_path"));
                     Path labelsPath = resolvePath(baseDir, cfg.getProperty("labels_path"));
@@ -181,7 +184,13 @@ public class Main {
         return count;
     }
 
+    public record NodeIngestResult(long count, Set<String> properties) {}
+
     public static void runIngest(Session session, Path nodesFile, Path edgesFile) throws IOException {
+        runIngest(session, nodesFile, edgesFile, null, null);
+    }
+
+    public static void runIngest(Session session, Path nodesFile, Path edgesFile, String scaleFactor, Path resultsDir) throws IOException {
         clearDatabase(session);
         ensureSchema(session);
         session.run("CALL db.awaitIndexes()");
@@ -189,12 +198,21 @@ public class Main {
         System.out.println("Starting Ingest...");
         long t0 = System.nanoTime();
         
-        Set<String> propertyKeys = ingestNodes(session, nodesFile);
-        ingestEdges(session, edgesFile);
-        createPropertyIndexes(session, propertyKeys);
-        
+        NodeIngestResult nodeRes = ingestNodes(session, nodesFile);
+        long edgesCount = ingestEdges(session, edgesFile);
         long t1 = System.nanoTime();
-        System.out.printf(Locale.ROOT, "Ingest completed: %.3f ms%n", (t1 - t0) / 1e6);
+
+        createPropertyIndexes(session, nodeRes.properties());
+        long t2 = System.nanoTime();
+        
+        double tInsert = (t1 - t0) / 1e6;
+        double tIndex = (t2 - t1) / 1e6;
+        double tTotal = (t2 - t0) / 1e6;
+
+        printIngestSummary("Neo4j", scaleFactor, nodeRes.count(), edgesCount, tInsert, tIndex, tTotal);
+        if (resultsDir != null) {
+            recordIngestMetrics(resultsDir, "neo4j", scaleFactor, nodeRes.count(), edgesCount, tInsert, tIndex, tTotal);
+        }
     }
 
     public static void benchmarking(Session session, Path idsPath, Path labelsPath, Path propsPath) throws IOException {
@@ -261,7 +279,7 @@ public class Main {
         session.run("CREATE INDEX node_label IF NOT EXISTS FOR (n:Node) ON (n.label)");
     }
 
-    public static Set<String> ingestNodes(Session session, Path nodesPgdf) throws IOException {
+    public static NodeIngestResult ingestNodes(Session session, Path nodesPgdf) throws IOException {
         final String cypher = """
             UNWIND $batch AS row
             CREATE (n:Node {id: row.id, label: row.label})
@@ -269,11 +287,11 @@ public class Main {
             """;
 
         Set<String> discoveredProps = new LinkedHashSet<>();
+        long nCount = 0;
 
         try (BufferedReader br = Files.newBufferedReader(nodesPgdf, StandardCharsets.UTF_8)) {
             String line;
             String[] header = null;
-            long nCount = 0;
 
             List<Map<String, Object>> batch = new ArrayList<>(NODE_BATCH);
 
@@ -339,7 +357,7 @@ public class Main {
 
             System.out.printf(Locale.ROOT, "  Nodes loaded: %,d%n", nCount);
         }
-        return discoveredProps;
+        return new NodeIngestResult(nCount, discoveredProps);
     }
 
     public static void createPropertyIndexes(Session session, Collection<String> properties) {
@@ -354,12 +372,12 @@ public class Main {
     }
 
 
-    public static void ingestEdges(Session session, Path edgesPgdf) throws IOException {
+    public static long ingestEdges(Session session, Path edgesPgdf) throws IOException {
         try (BufferedReader br = Files.newBufferedReader(edgesPgdf, StandardCharsets.UTF_8)) {
             String line = br.readLine();
             if (line == null) {
                 System.out.println("  Edges loaded: 0");
-                return;
+                return 0;
             }
 
             String[] header = line.split("\\|", -1);
@@ -415,6 +433,7 @@ public class Main {
             }
 
             System.out.printf(Locale.ROOT, "  Edges loaded: %,d%n", eCount);
+            return eCount;
         }
     }
 
@@ -549,5 +568,41 @@ public class Main {
             System.out.printf(Locale.ROOT, "  deleted in this step: %,d (total: %,d)%n", c, total);
         }
         System.out.println("Database cleared.");
+    }
+
+    public static void printIngestSummary(String engine, String sf, long nodesCount, long edgesCount,
+            double tInsertMs, double tIndexMs, double tTotalMs) {
+        System.out.println("\n==========================================");
+        System.out.printf(Locale.ROOT, "INGEST METRICS (%s)%n", engine);
+        System.out.println("==========================================");
+        if (sf != null && !sf.isBlank()) {
+            System.out.printf(Locale.ROOT, "Scale Factor : %s%n", sf);
+        }
+        System.out.printf(Locale.ROOT, "Nodes Loaded : %,d%n", nodesCount);
+        System.out.printf(Locale.ROOT, "Edges Loaded : %,d%n", edgesCount);
+        System.out.printf(Locale.ROOT, "Insert Time  : %10.3f ms%n", tInsertMs);
+        System.out.printf(Locale.ROOT, "Index Time   : %10.3f ms%n", tIndexMs);
+        System.out.printf(Locale.ROOT, "Total Time   : %10.3f ms%n", tTotalMs);
+        System.out.println("==========================================");
+    }
+
+    public static synchronized void recordIngestMetrics(Path resultsDir, String engine, String sf,
+            long nodesCount, long edgesCount, double tInsertMs, double tIndexMs, double tTotalMs) {
+        if (resultsDir == null) return;
+        try {
+            Files.createDirectories(resultsDir);
+            Path csvPath = resultsDir.resolve("ingest.csv");
+            boolean writeHeader = !Files.exists(csvPath);
+            try (PrintWriter pw = new PrintWriter(Files.newBufferedWriter(csvPath, StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND))) {
+                if (writeHeader) {
+                    pw.println("engine,scale_factor,nodes_count,edges_count,t_insert_ms,t_index_ms,t_total_ms");
+                }
+                pw.printf(Locale.ROOT, "%s,%s,%d,%d,%.3f,%.3f,%.3f%n",
+                        engine, sf, nodesCount, edgesCount, tInsertMs, tIndexMs, tTotalMs);
+            }
+        } catch (IOException e) {
+            System.err.println("[WARN] Could not write ingest metrics to CSV: " + e.getMessage());
+        }
     }
 }

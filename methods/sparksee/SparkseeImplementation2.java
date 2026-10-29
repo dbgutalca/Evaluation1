@@ -34,7 +34,9 @@ public class SparkseeImplementation2 {
                 System.out.println("Starting Ingest...");
                 String nodesPath = resolvePath(baseDir, cfg.getProperty("nodes_path")).toString();
                 String edgesPath = resolvePath(baseDir, cfg.getProperty("edges_path")).toString();
-                app.runIngest(nodesPath, edgesPath, dbPath);
+                String sf = cfg.getProperty("scale_factor", "unknown");
+                Path resultsDir = resolvePath(baseDir, cfg.getProperty("results_dir"));
+                app.runIngest(nodesPath, edgesPath, dbPath, sf, resultsDir);
             } else {
                 Path idsPath = resolvePath(baseDir, cfg.getProperty("ids_path"));
                 Path labelsPath = resolvePath(baseDir, cfg.getProperty("labels_path"));
@@ -226,12 +228,20 @@ public class SparkseeImplementation2 {
     }
 
     public void runIngest(String nodesPath, String edgesPath, String dbPath) throws Exception {
-        long startTotal = System.nanoTime();
+        runIngest(nodesPath, edgesPath, dbPath, null, null);
+    }
+
+    public void runIngest(String nodesPath, String edgesPath, String dbPath, String scaleFactor, Path resultsDir) throws Exception {
+        long t0 = System.nanoTime();
         
         SparkseeConfig cfg = new SparkseeConfig("sparksee.cfg");
         Sparksee sparksee = new Sparksee(cfg);
         Database db = null;
         Session sess = null;
+        long nodesCount = 0;
+        long edgesCount = 0;
+        long t1 = 0;
+        long t2 = 0;
         try {
             Files.deleteIfExists(Paths.get(dbPath));
             db = sparksee.create(dbPath, "PGDF");
@@ -242,25 +252,35 @@ public class SparkseeImplementation2 {
             extIdAttr = ensureAttribute(g, Type.NodesType, "ext_id", DataType.String, AttributeKind.Unique);
 
             System.out.println("Loading nodes...");
-            loadNodes(sess, g, Paths.get(nodesPath));
+            nodesCount = loadNodes(sess, g, Paths.get(nodesPath));
 
             System.out.println("Loading edges...");
-            loadEdges(sess, g, Paths.get(edgesPath));
+            edgesCount = loadEdges(sess, g, Paths.get(edgesPath));
+            t1 = System.nanoTime();
 
             System.out.println("Committing database...");
+            sess.commit();
+            t2 = System.nanoTime();
         } catch (Exception e) {
             e.printStackTrace();
+            throw e;
         } finally {
             if (sess != null) sess.close();
             if (db != null) db.close();
             sparksee.close();
         }
         
-        long endTotal = System.nanoTime();
-        System.out.printf(Locale.ROOT, "Ingest Completed. Total Time: %.3f ms%n", (endTotal - startTotal) / 1e6);
+        double tInsert = (t1 - t0) / 1e6;
+        double tIndex = (t2 - t1) / 1e6;
+        double tTotal = (t2 - t0) / 1e6;
+
+        printIngestSummary("Sparksee", scaleFactor, nodesCount, edgesCount, tInsert, tIndex, tTotal);
+        if (resultsDir != null) {
+            recordIngestMetrics(resultsDir, "sparksee", scaleFactor, nodesCount, edgesCount, tInsert, tIndex, tTotal);
+        }
     }
 
-    public void loadNodes(Session sess, Graph g, Path nodesFile) throws IOException {
+    public long loadNodes(Session sess, Graph g, Path nodesFile) throws IOException {
         try (BufferedReader br = Files.newBufferedReader(nodesFile, StandardCharsets.UTF_8)) {
             String line;
             String[] header = null;
@@ -313,13 +333,14 @@ public class SparkseeImplementation2 {
             }
             sess.commit();
             System.out.printf("  Nodes loaded: %,d%n", count);
+            return count;
         }
     }
 
-    public void loadEdges(Session sess, Graph g, Path edgesFile) throws IOException {
+    public long loadEdges(Session sess, Graph g, Path edgesFile) throws IOException {
         try (BufferedReader br = Files.newBufferedReader(edgesFile, StandardCharsets.UTF_8)) {
             String line = br.readLine();
-            if (line == null) return;
+            if (line == null) return 0;
 
             String[] header = line.split("\\|", -1);
             Map<String, Integer> idx = new HashMap<>();
@@ -365,6 +386,7 @@ public class SparkseeImplementation2 {
             }
             sess.commit();
             System.out.printf("  Edges loaded: %,d%n", count);
+            return count;
         }
     }
 
@@ -610,5 +632,41 @@ public class SparkseeImplementation2 {
     private String safeGet(String[] arr, Integer idx) {
         if (idx == null || idx < 0 || idx >= arr.length) return null;
         return arr[idx];
+    }
+
+    public static void printIngestSummary(String engine, String sf, long nodesCount, long edgesCount,
+            double tInsertMs, double tIndexMs, double tTotalMs) {
+        System.out.println("\n==========================================");
+        System.out.printf(Locale.ROOT, "INGEST METRICS (%s)%n", engine);
+        System.out.println("==========================================");
+        if (sf != null && !sf.isBlank()) {
+            System.out.printf(Locale.ROOT, "Scale Factor : %s%n", sf);
+        }
+        System.out.printf(Locale.ROOT, "Nodes Loaded : %,d%n", nodesCount);
+        System.out.printf(Locale.ROOT, "Edges Loaded : %,d%n", edgesCount);
+        System.out.printf(Locale.ROOT, "Insert Time  : %10.3f ms%n", tInsertMs);
+        System.out.printf(Locale.ROOT, "Index Time   : %10.3f ms%n", tIndexMs);
+        System.out.printf(Locale.ROOT, "Total Time   : %10.3f ms%n", tTotalMs);
+        System.out.println("==========================================");
+    }
+
+    public static synchronized void recordIngestMetrics(Path resultsDir, String engine, String sf,
+            long nodesCount, long edgesCount, double tInsertMs, double tIndexMs, double tTotalMs) {
+        if (resultsDir == null) return;
+        try {
+            Files.createDirectories(resultsDir);
+            Path csvPath = resultsDir.resolve("ingest.csv");
+            boolean writeHeader = !Files.exists(csvPath);
+            try (PrintWriter pw = new PrintWriter(Files.newBufferedWriter(csvPath, StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND))) {
+                if (writeHeader) {
+                    pw.println("engine,scale_factor,nodes_count,edges_count,t_insert_ms,t_index_ms,t_total_ms");
+                }
+                pw.printf(Locale.ROOT, "%s,%s,%d,%d,%.3f,%.3f,%.3f%n",
+                        engine, sf, nodesCount, edgesCount, tInsertMs, tIndexMs, tTotalMs);
+            }
+        } catch (IOException e) {
+            System.err.println("[WARN] Could not write ingest metrics to CSV: " + e.getMessage());
+        }
     }
 }
