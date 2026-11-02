@@ -398,10 +398,7 @@ public class SparkseeImplementation2 {
             System.out.println("Loading edges...");
             edgesCount = loadEdges(sess, g, Paths.get(edgesPath));
             t1 = System.nanoTime();
-
-            System.out.println("Committing database...");
-            sess.commit();
-            t2 = System.nanoTime();
+            t2 = t1;
         } catch (Exception e) {
             e.printStackTrace();
             throw e;
