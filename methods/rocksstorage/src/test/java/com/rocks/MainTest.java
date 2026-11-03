@@ -84,6 +84,26 @@ public class MainTest {
             store.forEachNodeByPropertyEquals("firstName", "NonExistent", nonExistentProp::add);
             assertTrue(nonExistentProp.isEmpty());
 
+            // Test prefix collision prevention (e.g. length=2 vs length=20)
+            File prefixNodesFile = tempFolder.newFile("prefix_nodes.pgdf");
+            File prefixEdgesFile = tempFolder.newFile("prefix_edges.pgdf");
+            Files.writeString(prefixNodesFile.toPath(),
+                    "@id|@label|length\n" +
+                    "10|Post|2\n" +
+                    "20|Post|20\n" +
+                    "25|Post|25\n"
+            );
+            Files.writeString(prefixEdgesFile.toPath(), "@id|@out|@label|@in|@dir\n");
+            store.ingestNodes(prefixNodesFile.toPath());
+
+            Set<String> len2Nodes = new HashSet<>();
+            store.forEachNodeByPropertyEquals("length", "2", len2Nodes::add);
+            assertEquals("Exact match should only return node 10 with length=2", Set.of("10"), len2Nodes);
+
+            Set<String> len20Nodes = new HashSet<>();
+            store.forEachNodeByPropertyEquals("length", "20", len20Nodes::add);
+            assertEquals("Exact match should only return node 20 with length=20", Set.of("20"), len20Nodes);
+
             // Test benchmarking method runs without exceptions
             File idsFile = tempFolder.newFile("ids.txt");
             File labelsFile = tempFolder.newFile("labels.txt");

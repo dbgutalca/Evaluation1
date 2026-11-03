@@ -676,26 +676,42 @@ validate_cardinality() {
 
     echo -e "\n${BOLD}>>> Running Correctness Check (Cardinality Validation)...${NC}"
     local mismatch_count
-    mismatch_count=$(awk -F ',' '
-        NR > 1 {
-            key = $5 ":" $6 # query_type:param
-            engine = $1
-            card = $8
-            if (key in seen_card && seen_card[key] != card) {
-                print "Mismatch for " key ": " seen_engine[key] "=" seen_card[key] " vs " engine "=" card
-                mismatches++
-            } else {
-                seen_card[key] = card
-                seen_engine[key] = engine
-            }
-        }
-        END { print mismatches + 0 }
-    ' "$bench_csv" | tail -n 1)
+    mismatch_count=$(python3 -c "
+import sys
+from collections import defaultdict
 
-    if [ "$mismatch_count" -eq 0 ]; then
+mismatches = defaultdict(dict)
+try:
+    with open('$bench_csv', 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('engine,'):
+                continue
+            parts = line.split(',')
+            engine = parts[0]
+            q_type = parts[4]
+            card = parts[-1]
+            param = ','.join(parts[5:-2])
+            query_key = f'{q_type}:{param}'
+            mismatches[query_key][engine] = card
+except Exception as e:
+    sys.exit(0)
+
+diffs = 0
+for q, eng_cards in mismatches.items():
+    unique_cards = set(eng_cards.values())
+    if len(unique_cards) > 1:
+        diffs += 1
+        summary = ', '.join([f'{eng}={c}' for eng, c in sorted(eng_cards.items())])
+        print(f'Mismatch for {q} -> {summary}')
+
+print(diffs)
+" 2>/dev/null | tail -n 1)
+
+    if [ -n "$mismatch_count" ] && [ "$mismatch_count" -eq 0 ]; then
         echo -e "${GREEN}✓ Correctness Check PASSED: All backends returned identical result cardinalities!${NC}"
     else
-        echo -e "${RED}⚠ Correctness Check WARNING: Found ${mismatch_count} cardinality mismatch(es) between engines!${NC}"
+        echo -e "${RED}⚠ Correctness Check WARNING: Found ${mismatch_count:-0} query discrepancy(ies) between engines!${NC}"
     fi
 }
 

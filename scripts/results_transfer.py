@@ -100,27 +100,41 @@ def create_receiver_handler(output_base: str, auth_token: str = None, single_tra
 
         def do_POST(self):
             if not self.path.startswith("/upload"):
+                msg = b"Endpoint Not Found. Use POST /upload\n"
                 self.send_response(404)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(msg)))
+                self.send_header("Connection", "close")
                 self.end_headers()
-                self.wfile.write(b"Endpoint Not Found. Use POST /upload\n")
+                self.wfile.write(msg)
+                self.wfile.flush()
                 return
 
             if auth_token:
                 client_token = self.headers.get("X-Auth-Token")
                 if client_token != auth_token:
+                    msg = b"Forbidden: Invalid or missing authentication token\n"
                     self.send_response(403)
                     self.send_header("Content-Type", "text/plain")
+                    self.send_header("Content-Length", str(len(msg)))
+                    self.send_header("Connection", "close")
                     self.end_headers()
-                    self.wfile.write(b"Forbidden: Invalid or missing authentication token\n")
+                    self.wfile.write(msg)
+                    self.wfile.flush()
                     self.log_message("Rejected upload: Invalid or missing X-Auth-Token")
                     return
 
             try:
                 content_len = int(self.headers.get('Content-Length', 0))
                 if content_len <= 0:
+                    msg = b"Bad Request: Empty payload\n"
                     self.send_response(400)
+                    self.send_header("Content-Type", "text/plain")
+                    self.send_header("Content-Length", str(len(msg)))
+                    self.send_header("Connection", "close")
                     self.end_headers()
-                    self.wfile.write(b"Bad Request: Empty payload\n")
+                    self.wfile.write(msg)
+                    self.wfile.flush()
                     return
 
                 self.log_message(f"Receiving {content_len:,} bytes of compressed payload...")
@@ -133,10 +147,14 @@ def create_receiver_handler(output_base: str, auth_token: str = None, single_tra
                 count = safe_extract_zip(zip_bytes, dest_dir)
                 self.log_message(f"Successfully extracted {count} files to: {dest_dir}")
 
+                resp_bytes = f"SUCCESS: {count} files saved to {dest_dir}\n".encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(resp_bytes)))
+                self.send_header("Connection", "close")
                 self.end_headers()
-                self.wfile.write(f"SUCCESS: {count} files saved to {dest_dir}\n".encode("utf-8"))
+                self.wfile.write(resp_bytes)
+                self.wfile.flush()
 
                 if single_transfer:
                     self.log_message("Single-transfer flag set. Terminating receiver server.")
@@ -144,10 +162,14 @@ def create_receiver_handler(output_base: str, auth_token: str = None, single_tra
                     threading.Thread(target=self.server.shutdown).start()
 
             except Exception as e:
+                err_msg = f"Internal Error: {str(e)}\n".encode("utf-8")
                 self.send_response(500)
                 self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(err_msg)))
+                self.send_header("Connection", "close")
                 self.end_headers()
-                self.wfile.write(f"Internal Error: {str(e)}\n".encode("utf-8"))
+                self.wfile.write(err_msg)
+                self.wfile.flush()
                 self.log_message(f"Error handling upload: {str(e)}")
 
     return ReceiverHandler
@@ -191,6 +213,7 @@ def run_sender(url: str, source_dir: str, token: str = None, tag: str = None):
     headers = {
         "Content-Type": "application/zip",
         "Content-Length": str(len(zip_bytes)),
+        "Connection": "close",
         "X-Dataset-Tag": tag or os.path.basename(os.path.abspath(source_dir))
     }
     if token:

@@ -418,7 +418,11 @@ public class Main implements AutoCloseable {
     }
 
     private static byte[] idxPrefix(String... partsWithoutLast) {
-        return idxKey(partsWithoutLast);
+        byte[] k = idxKey(partsWithoutLast);
+        byte[] out = new byte[k.length + 1];
+        System.arraycopy(k, 0, out, 0, k.length);
+        out[k.length] = SEP;
+        return out;
     }
 
     private static boolean startsWith(byte[] a, byte[] p) {
