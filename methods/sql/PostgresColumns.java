@@ -11,7 +11,7 @@ public class PostgresColumns {
     private static final int PROP_BATCH = 100_000;
 
     public static void main(String[] args) throws Exception {
-        if (args.length >= 2 && ("ingest".equals(args[0]) || "bench".equals(args[0]))) {
+        if (args.length >= 2 && ("ingest".equals(args[0]) || "bench".equals(args[0]) || "reset".equals(args[0]))) {
             Path configPath = Paths.get(args[1]).toAbsolutePath();
             Path baseDir = configPath.getParent();
             Properties cfg = loadConfig(configPath.toString());
@@ -20,7 +20,10 @@ public class PostgresColumns {
             String pass = cfg.getProperty("postgres_pass", "postgres");
             try (Connection cx = DriverManager.getConnection(url, user, pass)) {
                 cx.setAutoCommit(false);
-                if ("ingest".equals(args[0])) {
+                if ("reset".equals(args[0])) {
+                    reset(cx);
+                    System.out.println("✓ [PostgreSQL] Dropped all tables and indexes successfully.");
+                } else if ("ingest".equals(args[0])) {
                     Path nodesFile = resolvePath(baseDir, cfg.getProperty("nodes_path"));
                     Path edgesFile = resolvePath(baseDir, cfg.getProperty("edges_path"));
                     String sf = cfg.getProperty("scale_factor", "unknown");
@@ -417,6 +420,18 @@ public class PostgresColumns {
         if (resultsDir != null) {
             recordIngestMetrics(resultsDir, "postgresql", scaleFactor, nodesCount, edgesCount, tInsert, tIndex, tTotal);
         }
+    }
+
+    public static void reset(Connection cx) throws SQLException {
+        String ddl =
+            "DROP TABLE IF EXISTS edge_properties CASCADE;" +
+            "DROP TABLE IF EXISTS edges CASCADE;" +
+            "DROP TABLE IF EXISTS node_properties CASCADE;" +
+            "DROP TABLE IF EXISTS nodes CASCADE;";
+        try (Statement st = cx.createStatement()) {
+            st.execute(ddl);
+        }
+        cx.commit();
     }
 
     public static void ensureTables(Connection cx) throws SQLException {
