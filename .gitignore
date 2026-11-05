@@ -21,6 +21,7 @@
 .env
 .env.*
 !.env.example
+*.cfg
 
 # Benchmark configurations and results
 benchmark.properties
