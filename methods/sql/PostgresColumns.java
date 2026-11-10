@@ -188,6 +188,7 @@ public class PostgresColumns {
 
     public static long forEachEdgeIdByLabel(Connection cx, String label, java.util.function.Consumer<String> consumer) throws SQLException {
         try (PreparedStatement ps = cx.prepareStatement(SQL_EDGES_BY_LABEL)) {
+            ps.setFetchSize(50_000);
             return forEachEdgeIdByLabel(ps, label, consumer);
         }
     }
@@ -210,6 +211,7 @@ public class PostgresColumns {
 
     public static long forEachNodeByPropertyEquals(Connection cx, String key, String value, java.util.function.Consumer<String> consumer) throws SQLException {
         try (PreparedStatement ps = cx.prepareStatement(SQL_NODES_BY_PROP)) {
+            ps.setFetchSize(50_000);
             return forEachNodeByPropertyEquals(ps, key, value, consumer);
         }
     }
@@ -237,6 +239,7 @@ public class PostgresColumns {
         long totalLabels = 0;
         System.out.println("\nqueryEdgeIdsByLabel");
         try (PreparedStatement ps = cx.prepareStatement(SQL_EDGES_BY_LABEL)) {
+            ps.setFetchSize(50_000);
             for (String label : labels) {
                 long t0 = System.nanoTime();
                 long count = forEachEdgeIdByLabel(ps, label, null);
@@ -250,6 +253,7 @@ public class PostgresColumns {
         long totalProps = 0;
         System.out.println("\nqueryNodesByPropEquals");
         try (PreparedStatement ps = cx.prepareStatement(SQL_NODES_BY_PROP)) {
+            ps.setFetchSize(50_000);
             for (String line : props) {
                 String[] kv = line.split("=", 2);
                 if (kv.length < 2) continue;
@@ -301,6 +305,9 @@ public class PostgresColumns {
         try (PreparedStatement psGetNode = cx.prepareStatement(SQL_GET_NODE);
              PreparedStatement psEdgesByLabel = cx.prepareStatement(SQL_EDGES_BY_LABEL);
              PreparedStatement psNodesByProp = cx.prepareStatement(SQL_NODES_BY_PROP)) {
+
+            psEdgesByLabel.setFetchSize(50_000);
+            psNodesByProp.setFetchSize(50_000);
 
             if ("cold".equalsIgnoreCase(targetCond)) {
                 int rep = overrideRep != null ? overrideRep : 1;

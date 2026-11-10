@@ -27,6 +27,8 @@
 benchmark.properties
 *.properties.local
 results/
+received_results
+scripts/analyze_results.py
 !benchmark.properties.example
 
 # internal documentation
