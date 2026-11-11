@@ -201,24 +201,78 @@ RAM_TMP=""
 
 start_ram_sampler() {
     local engine="$1"
-    local target_name="$2"
+    local client_name="$2"
+    local server_name="${3:-}"
     RAM_TMP=$(mktemp)
 
     (
         while true; do
-            local rss_total=0
-            # Search for processes related to java or engine name
-            if command -v pgrep >/dev/null 2>&1; then
-                for p in $(pgrep -f "$target_name" 2>/dev/null); do
+            local total_kb=0
+
+            # 1. Measure client process (RSS in KB)
+            if [ -n "$client_name" ] && command -v pgrep >/dev/null 2>&1; then
+                for p in $(pgrep -f "$client_name" 2>/dev/null); do
                     local rss
                     rss=$(ps -p "$p" -o rss= 2>/dev/null | tr -d '[:space:]')
                     if [[ "$rss" =~ ^[0-9]+$ ]]; then
-                        rss_total=$((rss_total + rss))
+                        total_kb=$((total_kb + rss))
                     fi
                 done
             fi
-            if [ $rss_total -gt 0 ]; then
-                echo "$rss_total" >> "$RAM_TMP"
+
+            # 2. Measure server daemon if specified
+            if [ -n "$server_name" ] && command -v pgrep >/dev/null 2>&1; then
+                if [ "$engine" = "postgres" ]; then
+                    # PostgreSQL: Use Pss from smaps_rollup to avoid double-counting shared_buffers
+                    local pids
+                    pids=$(pgrep -f "$server_name" 2>/dev/null)
+                    if [ -n "$pids" ]; then
+                        local pss_sum=0
+                        local rollup_files=""
+                        for pid in $pids; do
+                            [ "$pid" = "$$" ] && continue
+                            if [ -r "/proc/${pid}/smaps_rollup" ]; then
+                                rollup_files="${rollup_files} /proc/${pid}/smaps_rollup"
+                            fi
+                        done
+                        if [ -n "$rollup_files" ]; then
+                            pss_sum=$(awk '/^Pss:/ {sum += $2} END {print sum}' $rollup_files 2>/dev/null)
+                        elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+                            local pid_list
+                            pid_list=$(echo "$pids" | tr '\n' ' ')
+                            pss_sum=$(sudo -n sh -c "awk '/^Pss:/ {sum += \$2} END {print sum}' /proc/$pid_list/smaps_rollup 2>/dev/null" || echo 0)
+                        fi
+
+                        if [[ "$pss_sum" =~ ^[0-9]+$ ]] && [ "$pss_sum" -gt 0 ]; then
+                            total_kb=$((total_kb + pss_sum))
+                        else
+                            # Fallback: sample primary postgres process to avoid N-fold shared memory inflation
+                            local primary_pid
+                            primary_pid=$(echo "$pids" | head -n 1)
+                            local s_rss
+                            s_rss=$(ps -p "$primary_pid" -o rss= 2>/dev/null | tr -d '[:space:]')
+                            if [[ "$s_rss" =~ ^[0-9]+$ ]]; then
+                                total_kb=$((total_kb + s_rss))
+                            fi
+                        fi
+                    fi
+                elif [ "$engine" = "neo4j" ]; then
+                    # Neo4j: Server is a dedicated JVM process, sum RSS
+                    for p in $(pgrep -f "$server_name" 2>/dev/null); do
+                        if [ -n "$client_name" ] && ps -p "$p" -o args= 2>/dev/null | grep -q "$client_name"; then
+                            continue
+                        fi
+                        local s_rss
+                        s_rss=$(ps -p "$p" -o rss= 2>/dev/null | tr -d '[:space:]')
+                        if [[ "$s_rss" =~ ^[0-9]+$ ]]; then
+                            total_kb=$((total_kb + s_rss))
+                        fi
+                    done
+                fi
+            fi
+
+            if [ $total_kb -gt 0 ]; then
+                echo "$total_kb" >> "$RAM_TMP"
             fi
             sleep 0.2
         done
@@ -310,6 +364,9 @@ run_rocksdb() {
     echo -e "\n${CYAN}>>> [RocksDB] Starting Benchmark...${NC}"
     echo -e "    Log output: ${log_file}"
 
+    # Clean previous results for this engine to prevent append duplication
+    rm -f "${RESULTS_DIR}/benchmark_${engine}.csv" "${RESULTS_DIR}/ram_usage_${engine}.csv" "${log_file}"
+
     cd "${ROOT_DIR}/methods/rocksstorage" || {
         record_status "RocksDB" "FAIL" "Directory methods/rocksstorage not found"
         return 1
@@ -365,6 +422,9 @@ run_mapdb() {
     echo -e "\n${CYAN}>>> [MapDB] Starting Benchmark...${NC}"
     echo -e "    Log output: ${log_file}"
 
+    # Clean previous results for this engine to prevent append duplication
+    rm -f "${RESULTS_DIR}/benchmark_${engine}.csv" "${RESULTS_DIR}/ram_usage_${engine}.csv" "${log_file}"
+
     cd "${ROOT_DIR}/methods/mapdbstorage" || {
         record_status "MapDB" "FAIL" "Directory methods/mapdbstorage not found"
         return 1
@@ -419,6 +479,9 @@ run_sparksee() {
     local log_file="${LOGS_DIR}/sparksee_bench.log"
     echo -e "\n${CYAN}>>> [Sparksee] Starting Benchmark...${NC}"
     echo -e "    Log output: ${log_file}"
+
+    # Clean previous results for this engine to prevent append duplication
+    rm -f "${RESULTS_DIR}/benchmark_${engine}.csv" "${RESULTS_DIR}/ram_usage_${engine}.csv" "${log_file}"
 
     cd "${ROOT_DIR}/methods/sparksee" || {
         record_status "Sparksee" "FAIL" "Directory methods/sparksee not found"
@@ -477,6 +540,9 @@ run_postgres() {
     echo -e "\n${CYAN}>>> [PostgreSQL] Starting Benchmark...${NC}"
     echo -e "    Log output: ${log_file}"
 
+    # Clean previous results for this engine to prevent append duplication
+    rm -f "${RESULTS_DIR}/benchmark_${engine}.csv" "${RESULTS_DIR}/ram_usage_${engine}.csv" "${log_file}"
+
     cd "${ROOT_DIR}/methods/sql" || {
         record_status "PostgreSQL" "FAIL" "Directory methods/sql not found"
         return 1
@@ -497,7 +563,7 @@ run_postgres() {
             echo -e "  [Cold Rep ${rep}/${COLD_REPS}]"
             restart_service "postgresql"
             drop_os_caches
-            start_ram_sampler "$engine" "PostgresColumns"
+            start_ram_sampler "$engine" "PostgresColumns" "(postgres:|bin/postgres)"
             java $SHUFFLE_JVM_ARG -cp "postgresql-42.7.8.jar:." PostgresColumns bench "${CONFIG_FILE}" cold "${rep}" 2>&1 | tee -a "$log_file"
             local exit_code=${PIPESTATUS[0]}
             stop_ram_sampler "$engine" "cold" "$rep"
@@ -511,7 +577,7 @@ run_postgres() {
     # Warm runs
     if [ $any_fail -eq 0 ] && ([ "$BENCH_COND" = "warm" ] || [ "$BENCH_COND" = "both" ]); then
         echo -e "  ${YELLOW}Executing Warm Passes (${WARM_REPS} repetitions, ${WARMUP_REPS} warmup)...${NC}"
-        start_ram_sampler "$engine" "PostgresColumns"
+        start_ram_sampler "$engine" "PostgresColumns" "(postgres:|bin/postgres)"
         java $SHUFFLE_JVM_ARG -cp "postgresql-42.7.8.jar:." PostgresColumns bench "${CONFIG_FILE}" warm 2>&1 | tee -a "$log_file"
         local exit_code=${PIPESTATUS[0]}
         stop_ram_sampler "$engine" "warm" "1"
@@ -535,6 +601,9 @@ run_neo4j() {
     echo -e "\n${CYAN}>>> [Neo4j] Starting Benchmark...${NC}"
     echo -e "    Log output: ${log_file}"
 
+    # Clean previous results for this engine to prevent append duplication
+    rm -f "${RESULTS_DIR}/benchmark_${engine}.csv" "${RESULTS_DIR}/ram_usage_${engine}.csv" "${log_file}"
+
     cd "${ROOT_DIR}/methods/neo4jc" || {
         record_status "Neo4j" "FAIL" "Directory methods/neo4jc not found"
         return 1
@@ -549,7 +618,7 @@ run_neo4j() {
             echo -e "  [Cold Rep ${rep}/${COLD_REPS}]"
             restart_service "neo4j"
             drop_os_caches
-            start_ram_sampler "$engine" "com.neo4j.Main"
+            start_ram_sampler "$engine" "com.neo4j.Main" "org.neo4j.server"
             mvn -q exec:java $SHUFFLE_JVM_ARG \
                 -Dexec.mainClass="com.neo4j.Main" \
                 -Dexec.args="bench \"${CONFIG_FILE}\" cold ${rep}" 2>&1 | tee -a "$log_file"
@@ -565,7 +634,7 @@ run_neo4j() {
     # Warm runs
     if [ $any_fail -eq 0 ] && ([ "$BENCH_COND" = "warm" ] || [ "$BENCH_COND" = "both" ]); then
         echo -e "  ${YELLOW}Executing Warm Passes (${WARM_REPS} repetitions, ${WARMUP_REPS} warmup)...${NC}"
-        start_ram_sampler "$engine" "com.neo4j.Main"
+        start_ram_sampler "$engine" "com.neo4j.Main" "org.neo4j.server"
         mvn -q exec:java $SHUFFLE_JVM_ARG \
             -Dexec.mainClass="com.neo4j.Main" \
             -Dexec.args="bench \"${CONFIG_FILE}\" warm" 2>&1 | tee -a "$log_file"
