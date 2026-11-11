@@ -345,12 +345,40 @@ drop_os_caches() {
 restart_service() {
     local service_name="$1"
     echo "    Restarting service: ${service_name}..."
-    if command -v systemctl >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-        sudo systemctl restart "$service_name" >/dev/null 2>&1 || true
-        sleep 2
+    if command -v systemctl >/dev/null 2>&1; then
+        if sudo -n true 2>/dev/null || [ "$(id -u)" -eq 0 ]; then
+            sudo systemctl restart "$service_name" >/dev/null 2>&1 || true
+        elif command -v neo4j >/dev/null 2>&1 && [ "$service_name" = "neo4j" ]; then
+            neo4j restart >/dev/null 2>&1 || true
+        fi
+        sleep 5
+        if [ "$service_name" = "neo4j" ]; then
+            echo "    Waiting for Neo4j Bolt port 7687 to accept connections..."
+            local waited=0
+            while [ $waited -lt 40 ]; do
+                if (echo > /dev/tcp/localhost/7687) >/dev/null 2>&1; then
+                    echo "    Neo4j port 7687 is READY (waited ${waited}s)."
+                    break
+                fi
+                sleep 2
+                waited=$((waited + 2))
+            done
+            sleep 2
+        fi
     elif command -v brew >/dev/null 2>&1; then
         brew services restart "$service_name" >/dev/null 2>&1 || true
-        sleep 2
+        sleep 5
+        if [ "$service_name" = "neo4j" ]; then
+            local waited=0
+            while [ $waited -lt 40 ]; do
+                if (echo > /dev/tcp/localhost/7687) >/dev/null 2>&1; then
+                    break
+                fi
+                sleep 2
+                waited=$((waited + 2))
+            done
+            sleep 2
+        fi
     fi
 }
 
@@ -609,6 +637,16 @@ run_neo4j() {
         return 1
     }
 
+    local m2_arg=""
+    if [ -d "${HOME}/.m2/repository" ]; then
+        m2_arg="-Dmaven.repo.local=${HOME}/.m2/repository"
+    fi
+    if [ -n "${SUDO_USER:-}" ] && [ -d "/home/${SUDO_USER}/.m2/repository" ]; then
+        m2_arg="-Dmaven.repo.local=/home/${SUDO_USER}/.m2/repository"
+    elif [ -d "/home/fernando/.m2/repository" ]; then
+        m2_arg="-Dmaven.repo.local=/home/fernando/.m2/repository"
+    fi
+
     local any_fail=0
 
     # Cold runs
@@ -619,7 +657,7 @@ run_neo4j() {
             restart_service "neo4j"
             drop_os_caches
             start_ram_sampler "$engine" "com.neo4j.Main" "org.neo4j.server"
-            mvn -q exec:java $SHUFFLE_JVM_ARG \
+            mvn -q exec:java $m2_arg $SHUFFLE_JVM_ARG \
                 -Dexec.mainClass="com.neo4j.Main" \
                 -Dexec.args="bench \"${CONFIG_FILE}\" cold ${rep}" 2>&1 | tee -a "$log_file"
             local exit_code=${PIPESTATUS[0]}
@@ -635,7 +673,7 @@ run_neo4j() {
     if [ $any_fail -eq 0 ] && ([ "$BENCH_COND" = "warm" ] || [ "$BENCH_COND" = "both" ]); then
         echo -e "  ${YELLOW}Executing Warm Passes (${WARM_REPS} repetitions, ${WARMUP_REPS} warmup)...${NC}"
         start_ram_sampler "$engine" "com.neo4j.Main" "org.neo4j.server"
-        mvn -q exec:java $SHUFFLE_JVM_ARG \
+        mvn -q exec:java $m2_arg $SHUFFLE_JVM_ARG \
             -Dexec.mainClass="com.neo4j.Main" \
             -Dexec.args="bench \"${CONFIG_FILE}\" warm" 2>&1 | tee -a "$log_file"
         local exit_code=${PIPESTATUS[0]}
