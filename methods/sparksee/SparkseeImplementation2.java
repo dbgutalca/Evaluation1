@@ -14,8 +14,6 @@ public class SparkseeImplementation2 {
     private final Map<String, Integer> nodeTypeIds = new HashMap<>();
     private final Map<String, Integer> edgeTypeIds = new HashMap<>();
     private final Map<Integer, Map<String, Integer>> attrsByType = new HashMap<>();
-    
-    private final Map<String, Long> oidByExtId = new HashMap<>(200_000);
 
     private int extIdAttr = Attribute.InvalidAttribute;
 
@@ -447,8 +445,7 @@ public class SparkseeImplementation2 {
 
                 int typeId = ensureNodeType(g, label);
                 long oid = g.newNode(typeId);
-                
-                oidByExtId.put(extId, oid);
+
                 g.setAttribute(oid, extIdAttr, v.setString(extId));
 
                 for (int i = 0; i < header.length && i < cols.length; i++) {
@@ -486,6 +483,11 @@ public class SparkseeImplementation2 {
 
             int count = 0;
             Value v = new Value();
+            Value vOut = new Value();
+            Value vIn = new Value();
+            if (extIdAttr == Attribute.InvalidAttribute) {
+                extIdAttr = g.findAttribute(Type.NodesType, "ext_id");
+            }
             sess.beginUpdate();
 
             while ((line = br.readLine()) != null) {
@@ -503,10 +505,10 @@ public class SparkseeImplementation2 {
                 boolean directed = !"F".equalsIgnoreCase(dir);
                 int edgeType = ensureEdgeType(g, label, directed);
 
-                Long outOid = oidByExtId.get(out);
-                Long inOid  = oidByExtId.get(in);
+                long outOid = g.findObject(extIdAttr, vOut.setString(out));
+                long inOid  = g.findObject(extIdAttr, vIn.setString(in));
 
-                if (outOid == null || inOid == null) continue;
+                if (outOid == com.sparsity.sparksee.gdb.Objects.InvalidOID || inOid == com.sparsity.sparksee.gdb.Objects.InvalidOID) continue;
 
                 long eoid = g.newEdge(edgeType, outOid, inOid);
 
