@@ -142,15 +142,172 @@ echo -e "${BOLD}================================================================
 # Result tracking
 RESULTS_ENGINE=()
 RESULTS_STATUS=()
+RESULTS_SIZE=()
 RESULTS_DETAIL=()
 
 record_status() {
     local engine="$1"
     local status="$2"
-    local detail="$3"
+    local size="${3:-N/A}"
+    local detail="${4:-}"
     RESULTS_ENGINE+=("$engine")
     RESULTS_STATUS+=("$status")
+    RESULTS_SIZE+=("$size")
     RESULTS_DETAIL+=("$detail")
+}
+
+# ------------------------------------------------------------------------------
+# Configuration Helpers & Storage Measurement
+# ------------------------------------------------------------------------------
+
+get_config_value() {
+    local key="$1"
+    local default_val="$2"
+    local val
+    val=$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$CONFIG_FILE" 2>/dev/null | head -n 1 | cut -d '=' -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    if [ -z "$val" ]; then
+        echo "$default_val"
+    else
+        echo "$val"
+    fi
+}
+
+resolve_config_path() {
+    local raw_path="$1"
+    if [ -z "$raw_path" ]; then
+        echo ""
+    elif [[ "$raw_path" = /* ]]; then
+        echo "$raw_path"
+    else
+        echo "${CONFIG_DIR}/${raw_path}"
+    fi
+}
+
+format_bytes_human() {
+    local b="$1"
+    if [ -z "$b" ] || [ "$b" -eq 0 ] 2>/dev/null; then
+        echo "0B"
+        return
+    fi
+    awk -v b="$b" 'BEGIN {
+        split("B KB MB GB TB PB", units);
+        i = 1;
+        while (b >= 1024 && i < 6) {
+            b /= 1024;
+            i++;
+        }
+        printf "%.2f%s", b, units[i];
+    }'
+}
+
+append_db_size_to_csv() {
+    local engine_lower="$1"
+    local bytes="$2"
+    local human="$3"
+    local csv_file="${RESULTS_DIR}/ingest_${engine_lower}.csv"
+
+    if [ -f "$csv_file" ]; then
+        local header
+        local data
+        header=$(head -n 1 "$csv_file")
+        data=$(tail -n +2 "$csv_file")
+
+        if [[ "$header" != *"db_size_bytes"* ]]; then
+            header="${header},db_size_bytes,db_size_human"
+            data="${data},${bytes},${human}"
+            printf "%s\n%s\n" "$header" "$data" > "$csv_file"
+        fi
+    fi
+
+    # Also log to dedicated db_sizes.csv
+    local sizes_csv="${RESULTS_DIR}/db_sizes.csv"
+    local sf
+    sf=$(get_config_value "scale_factor" "unknown")
+    if [ ! -f "$sizes_csv" ]; then
+        echo "engine,scale_factor,db_size_bytes,db_size_human" > "$sizes_csv"
+    fi
+    echo "${engine_lower},${sf},${bytes},${human}" >> "$sizes_csv"
+}
+
+measure_rocksdb_size() {
+    local db_raw=$(get_config_value "rocksdb_dir" "dbs/rocks")
+    local db_path=$(resolve_config_path "$db_raw")
+    local size_bytes="0"
+    if [ -d "$db_path" ]; then
+        size_bytes=$(du -sk "$db_path" 2>/dev/null | awk '{print $1 * 1024}')
+    fi
+    echo "${size_bytes:-0}"
+}
+
+measure_mapdb_size() {
+    local db_raw=$(get_config_value "mapdb_dir" "dbs/mapdb")
+    local db_path=$(resolve_config_path "$db_raw")
+    local size_bytes="0"
+    if [ -e "$db_path" ]; then
+        size_bytes=$(du -sk "$db_path" 2>/dev/null | awk '{print $1 * 1024}')
+    fi
+    echo "${size_bytes:-0}"
+}
+
+measure_sparksee_size() {
+    local db_raw=$(get_config_value "sparksee_db" "dbs/sparksee.gdb")
+    local db_path=$(resolve_config_path "$db_raw")
+    local size_bytes="0"
+    if [ -e "$db_path" ]; then
+        size_bytes=$(du -sk "$db_path" 2>/dev/null | awk '{print $1 * 1024}')
+    fi
+    echo "${size_bytes:-0}"
+}
+
+measure_postgres_size() {
+    local pg_url=$(get_config_value "postgres_url" "jdbc:postgresql://localhost:5432/postgres")
+    local pg_user=$(get_config_value "postgres_user" "postgres")
+    local pg_pass=$(get_config_value "postgres_pass" "postgres")
+
+    local pg_db=$(echo "$pg_url" | sed -E 's/.*\///' | cut -d '?' -f1)
+    [ -z "$pg_db" ] && pg_db="postgres"
+
+    local pg_host_port=$(echo "$pg_url" | sed -E 's/jdbc:postgresql:\/\/([^/]+)\/.*/\1/')
+    local pg_host=$(echo "$pg_host_port" | cut -d ':' -f1)
+    local pg_port=$(echo "$pg_host_port" | cut -s -d ':' -f2)
+    [ -z "$pg_port" ] && pg_port="5432"
+
+    local size_bytes=""
+    if command -v psql >/dev/null 2>&1; then
+        size_bytes=$(PGPASSWORD="$pg_pass" psql -h "$pg_host" -p "$pg_port" -U "$pg_user" -d "$pg_db" -t -A -c "SELECT pg_database_size('$pg_db');" 2>/dev/null | tr -d '[:space:]')
+    fi
+
+    # Fallback to postgres_data_dir or default directory if psql query failed
+    if [ -z "$size_bytes" ] || ! [[ "$size_bytes" =~ ^[0-9]+$ ]] || [ "$size_bytes" -eq 0 ] 2>/dev/null; then
+        local pg_data_dir=$(get_config_value "postgres_data_dir" "")
+        if [ -n "$pg_data_dir" ] && [ -d "$pg_data_dir" ]; then
+            size_bytes=$(du -sk "$pg_data_dir" 2>/dev/null | awk '{print $1 * 1024}')
+        fi
+    fi
+
+    echo "${size_bytes:-0}"
+}
+
+measure_neo4j_size() {
+    local data_dir_raw=$(get_config_value "neo4j_data_dir" "/var/lib/neo4j/data")
+    local data_dir=$(resolve_config_path "$data_dir_raw")
+    local db_name=$(get_config_value "neo4j_database" "neo4j")
+
+    local db_path="${data_dir}/databases/${db_name}"
+    local tx_path="${data_dir}/transactions/${db_name}"
+
+    local size_bytes
+    size_bytes=$(du -sk "$db_path" "$tx_path" 2>/dev/null | awk '{sum += $1} END {print sum * 1024}')
+
+    if [ -z "$size_bytes" ] || [ "$size_bytes" -eq 0 ] 2>/dev/null; then
+        local home_raw=$(get_config_value "neo4j_home" "")
+        if [ -n "$home_raw" ]; then
+            local home_dir=$(resolve_config_path "$home_raw")
+            size_bytes=$(du -sk "${home_dir}/data/databases/${db_name}" "${home_dir}/data/transactions/${db_name}" 2>/dev/null | awk '{sum += $1} END {print sum * 1024}')
+        fi
+    fi
+
+    echo "${size_bytes:-0}"
 }
 
 # ------------------------------------------------------------------------------
@@ -174,14 +331,19 @@ ingest_rocksdb() {
     local exit_code=${PIPESTATUS[0]}
 
     if [ $exit_code -eq 0 ]; then
-        echo -e "${GREEN}✓ [${engine}] Ingest completed successfully.${NC}"
-        record_status "$engine" "PASS" "Saved to ingest_rocksdb.csv"
+        local size_bytes
+        local size_human
+        size_bytes=$(measure_rocksdb_size)
+        size_human=$(format_bytes_human "$size_bytes")
+        append_db_size_to_csv "rocksdb" "$size_bytes" "$size_human"
+        echo -e "${GREEN}✓ [${engine}] Ingest completed successfully. DB Size: ${size_human} (${size_bytes} bytes)${NC}"
+        record_status "$engine" "PASS" "$size_human" "Saved to ingest_rocksdb.csv"
     elif [ $exit_code -eq 137 ]; then
         echo -e "${RED}✗ [${engine}] Ingest failed: Out of Memory (OOM / Killed).${NC}"
-        record_status "$engine" "FAIL" "Killed by OOM (exit code 137)"
+        record_status "$engine" "FAIL" "N/A" "Killed by OOM (exit code 137)"
     else
         echo -e "${RED}✗ [${engine}] Ingest failed with exit code ${exit_code}.${NC}"
-        record_status "$engine" "FAIL" "Exit code ${exit_code} (see log)"
+        record_status "$engine" "FAIL" "N/A" "Exit code ${exit_code} (see log)"
     fi
 }
 
@@ -192,7 +354,7 @@ ingest_mapdb() {
     echo -e "    Log output: ${log_file}"
 
     cd "${ROOT_DIR}/methods/mapdbstorage" || {
-        record_status "$engine" "FAIL" "Directory methods/mapdbstorage not found"
+        record_status "$engine" "FAIL" "N/A" "Directory methods/mapdbstorage not found"
         return 1
     }
 
@@ -202,14 +364,19 @@ ingest_mapdb() {
     local exit_code=${PIPESTATUS[0]}
 
     if [ $exit_code -eq 0 ]; then
-        echo -e "${GREEN}✓ [${engine}] Ingest completed successfully.${NC}"
-        record_status "$engine" "PASS" "Saved to ingest_mapdb.csv"
+        local size_bytes
+        local size_human
+        size_bytes=$(measure_mapdb_size)
+        size_human=$(format_bytes_human "$size_bytes")
+        append_db_size_to_csv "mapdb" "$size_bytes" "$size_human"
+        echo -e "${GREEN}✓ [${engine}] Ingest completed successfully. DB Size: ${size_human} (${size_bytes} bytes)${NC}"
+        record_status "$engine" "PASS" "$size_human" "Saved to ingest_mapdb.csv"
     elif [ $exit_code -eq 137 ]; then
         echo -e "${RED}✗ [${engine}] Ingest failed: Out of Memory (OOM / Killed).${NC}"
-        record_status "$engine" "FAIL" "Killed by OOM (exit code 137)"
+        record_status "$engine" "FAIL" "N/A" "Killed by OOM (exit code 137)"
     else
         echo -e "${RED}✗ [${engine}] Ingest failed with exit code ${exit_code}.${NC}"
-        record_status "$engine" "FAIL" "Exit code ${exit_code} (see log)"
+        record_status "$engine" "FAIL" "N/A" "Exit code ${exit_code} (see log)"
     fi
 }
 
@@ -220,14 +387,14 @@ ingest_sparksee() {
     echo -e "    Log output: ${log_file}"
 
     cd "${ROOT_DIR}/methods/sparksee" || {
-        record_status "$engine" "FAIL" "Directory methods/sparksee not found"
+        record_status "$engine" "FAIL" "N/A" "Directory methods/sparksee not found"
         return 1
     }
 
     # Compile Sparksee implementation if needed
     if ! javac -cp "sparkseejava.jar:." SparkseeImplementation2.java 2>&1 | tee -a "$log_file"; then
         echo -e "${RED}✗ [${engine}] Compilation failed (javac).${NC}"
-        record_status "$engine" "FAIL" "Compilation error (javac)"
+        record_status "$engine" "FAIL" "N/A" "Compilation error (javac)"
         return 1
     fi
 
@@ -235,14 +402,19 @@ ingest_sparksee() {
     local exit_code=${PIPESTATUS[0]}
 
     if [ $exit_code -eq 0 ]; then
-        echo -e "${GREEN}✓ [${engine}] Ingest completed successfully.${NC}"
-        record_status "$engine" "PASS" "Saved to ingest_sparksee.csv"
+        local size_bytes
+        local size_human
+        size_bytes=$(measure_sparksee_size)
+        size_human=$(format_bytes_human "$size_bytes")
+        append_db_size_to_csv "sparksee" "$size_bytes" "$size_human"
+        echo -e "${GREEN}✓ [${engine}] Ingest completed successfully. DB Size: ${size_human} (${size_bytes} bytes)${NC}"
+        record_status "$engine" "PASS" "$size_human" "Saved to ingest_sparksee.csv"
     elif [ $exit_code -eq 137 ]; then
         echo -e "${RED}✗ [${engine}] Ingest failed: Out of Memory (OOM / Killed).${NC}"
-        record_status "$engine" "FAIL" "Killed by OOM (exit code 137)"
+        record_status "$engine" "FAIL" "N/A" "Killed by OOM (exit code 137)"
     else
         echo -e "${RED}✗ [${engine}] Ingest failed with exit code ${exit_code}.${NC}"
-        record_status "$engine" "FAIL" "Exit code ${exit_code} (see log)"
+        record_status "$engine" "FAIL" "N/A" "Exit code ${exit_code} (see log)"
     fi
 }
 
@@ -253,14 +425,14 @@ ingest_postgres() {
     echo -e "    Log output: ${log_file}"
 
     cd "${ROOT_DIR}/methods/sql" || {
-        record_status "$engine" "FAIL" "Directory methods/sql not found"
+        record_status "$engine" "FAIL" "N/A" "Directory methods/sql not found"
         return 1
     }
 
     # Compile Postgres implementation if needed
     if ! javac -cp "postgresql-42.7.8.jar:." PostgresColumns.java 2>&1 | tee -a "$log_file"; then
         echo -e "${RED}✗ [${engine}] Compilation failed (javac).${NC}"
-        record_status "$engine" "FAIL" "Compilation error (javac)"
+        record_status "$engine" "FAIL" "N/A" "Compilation error (javac)"
         return 1
     fi
 
@@ -268,14 +440,19 @@ ingest_postgres() {
     local exit_code=${PIPESTATUS[0]}
 
     if [ $exit_code -eq 0 ]; then
-        echo -e "${GREEN}✓ [${engine}] Ingest completed successfully.${NC}"
-        record_status "$engine" "PASS" "Saved to ingest_postgres.csv"
+        local size_bytes
+        local size_human
+        size_bytes=$(measure_postgres_size)
+        size_human=$(format_bytes_human "$size_bytes")
+        append_db_size_to_csv "postgres" "$size_bytes" "$size_human"
+        echo -e "${GREEN}✓ [${engine}] Ingest completed successfully. DB Size: ${size_human} (${size_bytes} bytes)${NC}"
+        record_status "$engine" "PASS" "$size_human" "Saved to ingest_postgres.csv"
     elif [ $exit_code -eq 137 ]; then
         echo -e "${RED}✗ [${engine}] Ingest failed: Out of Memory (OOM / Killed).${NC}"
-        record_status "$engine" "FAIL" "Killed by OOM (exit code 137)"
+        record_status "$engine" "FAIL" "N/A" "Killed by OOM (exit code 137)"
     else
         echo -e "${RED}✗ [${engine}] Ingest failed with exit code ${exit_code}.${NC}"
-        record_status "$engine" "FAIL" "Exit code ${exit_code} (see log)"
+        record_status "$engine" "FAIL" "N/A" "Exit code ${exit_code} (see log)"
     fi
 }
 
@@ -286,7 +463,7 @@ ingest_neo4j() {
     echo -e "    Log output: ${log_file}"
 
     cd "${ROOT_DIR}/methods/neo4jc" || {
-        record_status "$engine" "FAIL" "Directory methods/neo4jc not found"
+        record_status "$engine" "FAIL" "N/A" "Directory methods/neo4jc not found"
         return 1
     }
 
@@ -296,14 +473,19 @@ ingest_neo4j() {
     local exit_code=${PIPESTATUS[0]}
 
     if [ $exit_code -eq 0 ]; then
-        echo -e "${GREEN}✓ [${engine}] Ingest completed successfully.${NC}"
-        record_status "$engine" "PASS" "Saved to ingest_neo4j.csv"
+        local size_bytes
+        local size_human
+        size_bytes=$(measure_neo4j_size)
+        size_human=$(format_bytes_human "$size_bytes")
+        append_db_size_to_csv "neo4j" "$size_bytes" "$size_human"
+        echo -e "${GREEN}✓ [${engine}] Ingest completed successfully. DB Size: ${size_human} (${size_bytes} bytes)${NC}"
+        record_status "$engine" "PASS" "$size_human" "Saved to ingest_neo4j.csv"
     elif [ $exit_code -eq 137 ]; then
         echo -e "${RED}✗ [${engine}] Ingest failed: Out of Memory (OOM / Killed).${NC}"
-        record_status "$engine" "FAIL" "Killed by OOM (exit code 137)"
+        record_status "$engine" "FAIL" "N/A" "Killed by OOM (exit code 137)"
     else
         echo -e "${RED}✗ [${engine}] Ingest failed with exit code ${exit_code}.${NC}"
-        record_status "$engine" "FAIL" "Exit code ${exit_code} (see log)"
+        record_status "$engine" "FAIL" "N/A" "Exit code ${exit_code} (see log)"
     fi
 }
 
@@ -373,7 +555,7 @@ consolidate_ingest_csvs
 echo -e "\n\n${BOLD}================================================================================${NC}"
 echo -e "${BOLD}                     INGESTION EXECUTION SUMMARY REPORT                         ${NC}"
 echo -e "${BOLD}================================================================================${NC}"
-printf "%-15s | %-10s | %-48s\n" "ENGINE" "STATUS" "DETAILS"
+printf "%-12s | %-8s | %-12s | %-40s\n" "ENGINE" "STATUS" "DB SIZE" "DETAILS"
 echo "--------------------------------------------------------------------------------"
 
 fail_count=0
@@ -382,15 +564,16 @@ pass_count=0
 for i in "${!RESULTS_ENGINE[@]}"; do
     name="${RESULTS_ENGINE[$i]}"
     status="${RESULTS_STATUS[$i]}"
+    size="${RESULTS_SIZE[$i]}"
     detail="${RESULTS_DETAIL[$i]}"
 
     case "$status" in
         PASS)
-            printf "%-15s | ${GREEN}%-10s${NC} | %-48s\n" "$name" "$status" "$detail"
+            printf "%-12s | ${GREEN}%-8s${NC} | %-12s | %-40s\n" "$name" "$status" "$size" "$detail"
             ((pass_count++))
             ;;
         FAIL)
-            printf "%-15s | ${RED}%-10s${NC} | %-48s\n" "$name" "$status" "$detail"
+            printf "%-12s | ${RED}%-8s${NC} | %-12s | %-40s\n" "$name" "$status" "$size" "$detail"
             ((fail_count++))
             ;;
     esac
@@ -398,8 +581,9 @@ done
 
 echo "================================================================================"
 echo -e "Totals: ${pass_count} passed, ${fail_count} failed."
-echo -e "CSV Results : ${CYAN}${RESULTS_DIR}/ingest.csv${NC}"
-echo -e "Detailed Logs : ${CYAN}${LOGS_DIR}/${NC}"
+echo -e "CSV Ingest   : ${CYAN}${RESULTS_DIR}/ingest.csv${NC}"
+echo -e "CSV Sizes    : ${CYAN}${RESULTS_DIR}/db_sizes.csv${NC}"
+echo -e "Detailed Logs: ${CYAN}${LOGS_DIR}/${NC}"
 
 if [ "$fail_count" -gt 0 ]; then
     echo -e "\n${RED}⚠ One or more engines failed during ingestion. Check logs above for details.${NC}"
