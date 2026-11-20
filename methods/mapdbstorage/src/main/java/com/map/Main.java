@@ -1,6 +1,8 @@
 package com.map;
 
 import org.mapdb.*;
+import org.mapdb.serializer.GroupSerializer;
+import org.mapdb.serializer.GroupSerializerObjectArray;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -363,16 +365,17 @@ public class Main implements AutoCloseable {
         File dbFile = folder.resolve(DB_FILE_NAME).toFile();
 
         DB db = DBMaker.fileDB(dbFile)
-                .fileMmapEnableIfSupported()
+                .fileChannelEnable()
+                .concurrencyScale(1)
+                .allocateIncrement(512L * 1024L * 1024L)
                 .closeOnJvmShutdown()
-                .concurrencyScale(16)
                 .make();
 
-        HTreeMap<String, NodeBlob> nodes = db.hashMap(MAP_NODES, Serializer.STRING, Serializer.JAVA).createOrOpen();
-        HTreeMap<String, EdgeBlob> edges = db.hashMap(MAP_EDGES, Serializer.STRING, Serializer.JAVA).createOrOpen();
+        HTreeMap<String, NodeBlob> nodes = db.hashMap(MAP_NODES, Serializer.STRING, NODE_BLOB_SERIALIZER).createOrOpen();
+        HTreeMap<String, EdgeBlob> edges = db.hashMap(MAP_EDGES, Serializer.STRING, EDGE_BLOB_SERIALIZER).createOrOpen();
 
-        NavigableSet<KeyTuple> idxEdgeIdsByLabel = (NavigableSet<KeyTuple>) db.treeSet(IDX_EDGEIDS_BY_LABEL, Serializer.JAVA).createOrOpen();
-        NavigableSet<KeyTuple> idxNodesByProp    = (NavigableSet<KeyTuple>) db.treeSet(IDX_NODES_BY_PROP,    Serializer.JAVA).createOrOpen();
+        NavigableSet<KeyTuple> idxEdgeIdsByLabel = (NavigableSet<KeyTuple>) db.treeSet(IDX_EDGEIDS_BY_LABEL, KEY_TUPLE_SERIALIZER).createOrOpen();
+        NavigableSet<KeyTuple> idxNodesByProp    = (NavigableSet<KeyTuple>) db.treeSet(IDX_NODES_BY_PROP,    KEY_TUPLE_SERIALIZER).createOrOpen();
 
         return new Main(db, nodes, edges, idxEdgeIdsByLabel, idxNodesByProp);
     }
@@ -391,9 +394,21 @@ public class Main implements AutoCloseable {
         public final Map<String, String> props;
         public NodeBlob(String label, Map<String, String> props) {
             this.label = label;
-            this.props = new LinkedHashMap<>(props);
+            this.props = new LinkedHashMap<>(props != null ? props : Collections.emptyMap());
         }
         @Override public String toString() { return "Node{label="+label+", props="+props+"}"; }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof NodeBlob other)) return false;
+            return Objects.equals(this.label, other.label) && Objects.equals(this.props, other.props);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(label, props);
+        }
     }
 
     public static final class EdgeBlob implements Serializable {
@@ -405,6 +420,20 @@ public class Main implements AutoCloseable {
             this.label = label; this.src = src; this.dst = dst;
         }
         @Override public String toString() { return "Edge{label="+label+", src="+src+", dst="+dst+"}"; }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof EdgeBlob other)) return false;
+            return Objects.equals(this.label, other.label) &&
+                    Objects.equals(this.src, other.src) &&
+                    Objects.equals(this.dst, other.dst);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(label, src, dst);
+        }
     }
 
     public static final class KeyTuple implements Serializable, Comparable<KeyTuple> {
@@ -415,18 +444,19 @@ public class Main implements AutoCloseable {
         final String p2;
         final String p3;
 
+        public KeyTuple(int type, String p1, String p2, String p3) {
+            this.type = type;
+            this.p1 = p1 != null ? p1 : "";
+            this.p2 = p2 != null ? p2 : "";
+            this.p3 = p3 != null ? p3 : "";
+        }
+
         public KeyTuple(String label, String edgeId) {
-            this.type = 1;
-            this.p1 = label;
-            this.p2 = edgeId;
-            this.p3 = "";
+            this(1, label, edgeId, "");
         }
 
         public KeyTuple(String key, String val, String nodeId) {
-            this.type = 2;
-            this.p1 = key;
-            this.p2 = val;
-            this.p3 = nodeId;
+            this(2, key, val, nodeId);
         }
 
         @Override
@@ -438,7 +468,116 @@ public class Main implements AutoCloseable {
             if (cmp != 0) return cmp;
             return this.p3.compareTo(o.p3);
         }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof KeyTuple other)) return false;
+            return this.type == other.type &&
+                    Objects.equals(this.p1, other.p1) &&
+                    Objects.equals(this.p2, other.p2) &&
+                    Objects.equals(this.p3, other.p3);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(type, p1, p2, p3);
+        }
     }
+
+    public static final Serializer<NodeBlob> NODE_BLOB_SERIALIZER = new Serializer<NodeBlob>() {
+        @Override
+        public void serialize(DataOutput2 out, NodeBlob value) throws IOException {
+            out.writeUTF(value.label != null ? value.label : "");
+            Map<String, String> props = value.props;
+            if (props == null || props.isEmpty()) {
+                out.writeInt(0);
+            } else {
+                out.writeInt(props.size());
+                for (Map.Entry<String, String> entry : props.entrySet()) {
+                    out.writeUTF(entry.getKey() != null ? entry.getKey() : "");
+                    out.writeUTF(entry.getValue() != null ? entry.getValue() : "");
+                }
+            }
+        }
+
+        @Override
+        public NodeBlob deserialize(DataInput2 in, int available) throws IOException {
+            String label = in.readUTF();
+            int size = in.readInt();
+            Map<String, String> props = new LinkedHashMap<>(size);
+            for (int i = 0; i < size; i++) {
+                String k = in.readUTF();
+                String v = in.readUTF();
+                props.put(k, v);
+            }
+            return new NodeBlob(label, props);
+        }
+
+        @Override
+        public int compare(NodeBlob o1, NodeBlob o2) {
+            if (o1 == o2) return 0;
+            if (o1 == null) return -1;
+            if (o2 == null) return 1;
+            return o1.label.compareTo(o2.label);
+        }
+    };
+
+    public static final Serializer<EdgeBlob> EDGE_BLOB_SERIALIZER = new Serializer<EdgeBlob>() {
+        @Override
+        public void serialize(DataOutput2 out, EdgeBlob value) throws IOException {
+            out.writeUTF(value.label != null ? value.label : "");
+            out.writeUTF(value.src != null ? value.src : "");
+            out.writeUTF(value.dst != null ? value.dst : "");
+        }
+
+        @Override
+        public EdgeBlob deserialize(DataInput2 in, int available) throws IOException {
+            String label = in.readUTF();
+            String src = in.readUTF();
+            String dst = in.readUTF();
+            return new EdgeBlob(label, src, dst);
+        }
+
+        @Override
+        public int compare(EdgeBlob o1, EdgeBlob o2) {
+            if (o1 == o2) return 0;
+            if (o1 == null) return -1;
+            if (o2 == null) return 1;
+            int c = o1.label.compareTo(o2.label);
+            if (c != 0) return c;
+            c = o1.src.compareTo(o2.src);
+            if (c != 0) return c;
+            return o1.dst.compareTo(o2.dst);
+        }
+    };
+
+    public static final GroupSerializer<KeyTuple> KEY_TUPLE_SERIALIZER = new GroupSerializerObjectArray<KeyTuple>() {
+        @Override
+        public void serialize(DataOutput2 out, KeyTuple value) throws IOException {
+            out.writeByte(value.type);
+            out.writeUTF(value.p1 != null ? value.p1 : "");
+            out.writeUTF(value.p2 != null ? value.p2 : "");
+            out.writeUTF(value.p3 != null ? value.p3 : "");
+        }
+
+        @Override
+        public KeyTuple deserialize(DataInput2 in, int available) throws IOException {
+            int type = in.readByte();
+            String p1 = in.readUTF();
+            String p2 = in.readUTF();
+            String p3 = in.readUTF();
+            return new KeyTuple(type, p1, p2, p3);
+        }
+
+        @Override
+        public int compare(KeyTuple o1, KeyTuple o2) {
+            if (o1 == o2) return 0;
+            if (o1 == null) return -1;
+            if (o2 == null) return 1;
+            return o1.compareTo(o2);
+        }
+    };
 
     public void runIngest(Path nodes, Path edges) throws IOException {
         runIngest(nodes, edges, null, null);

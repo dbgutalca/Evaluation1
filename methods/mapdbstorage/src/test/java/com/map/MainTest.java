@@ -3,10 +3,13 @@ package com.map;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+import org.mapdb.DataInput2;
+import org.mapdb.DataOutput2;
 
 import java.io.File;
 import java.nio.file.Files;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.Assert.*;
@@ -95,5 +98,47 @@ public class MainTest {
 
             store.benchmarking(idsFile.toPath(), labelsFile.toPath(), propsFile.toPath());
         }
+    }
+
+    @Test
+    public void testSerializersRoundTrip() throws Exception {
+        // 1. Test NodeBlobSerializer
+        Main.NodeBlob originalNode = new Main.NodeBlob("Person", Map.of("name", "Alice", "age", "30"));
+        DataOutput2 out = new DataOutput2();
+        Main.NODE_BLOB_SERIALIZER.serialize(out, originalNode);
+        DataInput2 in = new DataInput2.ByteArray(out.copyBytes());
+        Main.NodeBlob deserializedNode = Main.NODE_BLOB_SERIALIZER.deserialize(in, out.pos);
+        assertEquals(originalNode.label, deserializedNode.label);
+        assertEquals(originalNode.props, deserializedNode.props);
+        assertEquals(originalNode, deserializedNode);
+
+        // 2. Test EdgeBlobSerializer
+        Main.EdgeBlob originalEdge = new Main.EdgeBlob("Knows", "node1", "node2");
+        out = new DataOutput2();
+        Main.EDGE_BLOB_SERIALIZER.serialize(out, originalEdge);
+        in = new DataInput2.ByteArray(out.copyBytes());
+        Main.EdgeBlob deserializedEdge = Main.EDGE_BLOB_SERIALIZER.deserialize(in, out.pos);
+        assertEquals(originalEdge.label, deserializedEdge.label);
+        assertEquals(originalEdge.src, deserializedEdge.src);
+        assertEquals(originalEdge.dst, deserializedEdge.dst);
+        assertEquals(originalEdge, deserializedEdge);
+
+        // 3. Test KeyTupleSerializer (type 1: edge id by label)
+        Main.KeyTuple originalTuple1 = new Main.KeyTuple("Knows", "edge_123");
+        out = new DataOutput2();
+        Main.KEY_TUPLE_SERIALIZER.serialize(out, originalTuple1);
+        in = new DataInput2.ByteArray(out.copyBytes());
+        Main.KeyTuple deserializedTuple1 = Main.KEY_TUPLE_SERIALIZER.deserialize(in, out.pos);
+        assertEquals(originalTuple1, deserializedTuple1);
+        assertEquals(0, Main.KEY_TUPLE_SERIALIZER.compare(originalTuple1, deserializedTuple1));
+
+        // 4. Test KeyTupleSerializer (type 2: node id by property)
+        Main.KeyTuple originalTuple2 = new Main.KeyTuple("gender", "female", "node_456");
+        out = new DataOutput2();
+        Main.KEY_TUPLE_SERIALIZER.serialize(out, originalTuple2);
+        in = new DataInput2.ByteArray(out.copyBytes());
+        Main.KeyTuple deserializedTuple2 = Main.KEY_TUPLE_SERIALIZER.deserialize(in, out.pos);
+        assertEquals(originalTuple2, deserializedTuple2);
+        assertEquals(0, Main.KEY_TUPLE_SERIALIZER.compare(originalTuple2, deserializedTuple2));
     }
 }
