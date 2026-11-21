@@ -227,7 +227,7 @@ append_db_size_to_csv() {
         echo "engine,scale_factor,db_size_bytes,db_size_human" > "$sizes_csv"
     else
         # Remove previous entry for this engine if present to avoid duplicates on re-runs
-        grep -v "^${engine_lower}," "$sizes_csv" > "${sizes_csv}.tmp" 2>/dev/null && mv "${sizes_csv}.tmp" "$sizes_csv"
+        grep -v "^${engine_lower}," "$sizes_csv" > "${sizes_csv}.tmp" 2>/dev/null && mv -f "${sizes_csv}.tmp" "$sizes_csv"
     fi
     echo "${engine_lower},${sf},${bytes},${human}" >> "$sizes_csv"
 }
@@ -555,7 +555,8 @@ consolidate_ingest_csvs() {
     done
 
     if [ -f "$temp_csv" ]; then
-        mv "$temp_csv" "$target_csv"
+        rm -f "$target_csv" 2>/dev/null || true
+        mv -f "$temp_csv" "$target_csv"
     fi
 }
 

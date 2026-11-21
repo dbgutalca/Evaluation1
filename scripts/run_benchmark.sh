@@ -745,7 +745,8 @@ consolidate_bench_csvs() {
     done
 
     if [ -f "$temp_csv" ]; then
-        mv "$temp_csv" "$target_csv"
+        rm -f "$target_csv" 2>/dev/null || true
+        mv -f "$temp_csv" "$target_csv"
     fi
 }
 
@@ -765,7 +766,8 @@ consolidate_ram_csvs() {
     done
 
     if [ -f "$temp_csv" ]; then
-        mv "$temp_csv" "$target_csv"
+        rm -f "$target_csv" 2>/dev/null || true
+        mv -f "$temp_csv" "$target_csv"
     fi
 }
 
