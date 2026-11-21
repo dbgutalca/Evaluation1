@@ -225,6 +225,9 @@ append_db_size_to_csv() {
     sf=$(get_config_value "scale_factor" "unknown")
     if [ ! -f "$sizes_csv" ]; then
         echo "engine,scale_factor,db_size_bytes,db_size_human" > "$sizes_csv"
+    else
+        # Remove previous entry for this engine if present to avoid duplicates on re-runs
+        grep -v "^${engine_lower}," "$sizes_csv" > "${sizes_csv}.tmp" 2>/dev/null && mv "${sizes_csv}.tmp" "$sizes_csv"
     fi
     echo "${engine_lower},${sf},${bytes},${human}" >> "$sizes_csv"
 }
@@ -320,6 +323,8 @@ ingest_rocksdb() {
     echo -e "\n${CYAN}>>> [${engine}] Starting Ingestion...${NC}"
     echo -e "    Log output: ${log_file}"
 
+    rm -f "${RESULTS_DIR}/ingest_rocksdb.csv" "${log_file}"
+
     cd "${ROOT_DIR}/methods/rocksstorage" || {
         record_status "$engine" "FAIL" "Directory methods/rocksstorage not found"
         return 1
@@ -353,6 +358,8 @@ ingest_mapdb() {
     echo -e "\n${CYAN}>>> [${engine}] Starting Ingestion...${NC}"
     echo -e "    Log output: ${log_file}"
 
+    rm -f "${RESULTS_DIR}/ingest_mapdb.csv" "${log_file}"
+
     cd "${ROOT_DIR}/methods/mapdbstorage" || {
         record_status "$engine" "FAIL" "N/A" "Directory methods/mapdbstorage not found"
         return 1
@@ -385,6 +392,8 @@ ingest_sparksee() {
     local log_file="${LOGS_DIR}/sparksee_ingest.log"
     echo -e "\n${CYAN}>>> [${engine}] Starting Ingestion...${NC}"
     echo -e "    Log output: ${log_file}"
+
+    rm -f "${RESULTS_DIR}/ingest_sparksee.csv" "${log_file}"
 
     cd "${ROOT_DIR}/methods/sparksee" || {
         record_status "$engine" "FAIL" "N/A" "Directory methods/sparksee not found"
@@ -424,6 +433,8 @@ ingest_postgres() {
     echo -e "\n${CYAN}>>> [${engine}] Starting Ingestion...${NC}"
     echo -e "    Log output: ${log_file}"
 
+    rm -f "${RESULTS_DIR}/ingest_postgres.csv" "${log_file}"
+
     cd "${ROOT_DIR}/methods/sql" || {
         record_status "$engine" "FAIL" "N/A" "Directory methods/sql not found"
         return 1
@@ -461,6 +472,8 @@ ingest_neo4j() {
     local log_file="${LOGS_DIR}/neo4j_ingest.log"
     echo -e "\n${CYAN}>>> [${engine}] Starting Ingestion...${NC}"
     echo -e "    Log output: ${log_file}"
+
+    rm -f "${RESULTS_DIR}/ingest_neo4j.csv" "${log_file}"
 
     cd "${ROOT_DIR}/methods/neo4jc" || {
         record_status "$engine" "FAIL" "N/A" "Directory methods/neo4jc not found"
